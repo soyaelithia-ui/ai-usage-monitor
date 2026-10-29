@@ -1,0 +1,290 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  appendFileSync,
+  statSync,
+  rmSync,
+  mkdirSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import request from 'supertest';
+import { openCodeMessage, geminiMessage, visibleText } from '../server/adapters.js';
+import { Sources } from '../server/sources.js';
+import { Collector } from '../server/collector.js';
+import { normalize, estimate } from '../server/usage.js';
+import {
+  openDb,
+  insertEvent,
+  analytics,
+  events,
+  filters,
+  hash,
+  issue,
+  exchange,
+} from '../server/db.js';
+import { reconcile } from '../server/provenance.js';
+import { createApp, cookieName } from '../server/app.js';
+const epoch = Date.parse('2026-10-29T06:00:00Z');
+const oc = (extra = {}) => ({
+  id: 'message-1',
+  type: 'assistant',
+  model: { id: 'gpt-6-astra', providerID: 'openai' },
+  time: { created: epoch, completed: epoch + 1 },
+  tokens: { input: 10, output: 20, reasoning: 30, cache: { read: 40, write: 50 } },
+  ...extra,
+});
+const gm = (extra = {}) => ({
+  id: 'gemini-1',
+  type: 'gemini',
+  model: 'gemini-2.5-pro',
+  timestamp: new Date(epoch + 1).toISOString(),
+  tokens: { input: 100, output: 20, thoughts: 30, tool: 10, cached: 40, total: 160 },
+  ...extra,
+});
+const setup = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'usage-monitor-native-'));
+  return { dir, db: openDb(':memory:', epoch) };
+};
+test('synthetic usage fixture preserves exact totals and decimal components', () => {
+  const db = openDb(':memory:', epoch);
+  const rows = JSON.parse(readFileSync(new URL('./fixtures/baseline.json', import.meta.url)));
+  for (const row of rows) insertEvent(db, row);
+  const a = analytics(db, filters({ window: '7d' }, Date.parse('2026-01-02T00:00:00Z'))).totals;
+  assert.equal(a.count, 3);
+  assert.equal(a.inputTokens, '103000');
+  assert.equal(a.outputTokens, '10500');
+  assert.equal(a.cachedInputTokens, '76000');
+  assert.equal(a.normalInputTokens, '22000');
+  assert.equal(a.totalTokens, '113500');
+  assert.equal(a.costUsd, '0.8835');
+  assert.equal(a.costInputUsd, '0.22');
+  assert.equal(a.costCacheUsd, '0.1385');
+  assert.equal(a.costOutputUsd, '0.525');
+  db.close();
+});
+test('OpenCode 2.1.4 semantics, complete-only and precision; unknown schemas rejected', () => {
+  const e = normalize(openCodeMessage(oc(), 's', '2.1.4'));
+  assert.equal(e.inputTokens, '100');
+  assert.equal(e.outputTokens, '50');
+  assert.equal(e.totalTokens, '150');
+  assert.equal(openCodeMessage(oc({ time: { created: epoch } }), 's', '2.1.4'), null);
+  assert.throws(() => openCodeMessage(oc(), 's', '1.0.0'));
+  assert.throws(() => openCodeMessage(oc({ model: {} }), 's', '2.1.4'));
+  assert.throws(() => openCodeMessage(oc({ tokens: { input: 1 } }), 's', '2.1.4'));
+  const comp = oc({ type: 'compaction', status: 'completed' });
+  assert.equal(openCodeMessage(comp, 's', '2.1.4').inputTokens, '100');
+  assert.equal(openCodeMessage({ ...comp, status: 'running' }, 's', '2.1.4'), null);
+});
+test('Google input includes tools; output includes thoughts; cache is a subset and total reconciles', () => {
+  const e = normalize(geminiMessage(gm(), 's'));
+  assert.equal(e.inputTokens, '110');
+  assert.equal(e.outputTokens, '50');
+  assert.equal(e.totalTokens, '160');
+  assert.equal(e.cachedInputTokens, '40');
+  assert.throws(
+    () => geminiMessage(gm({ tokens: { ...gm().tokens, total: 150 } }), 's'),
+    /total_mismatch/,
+  );
+  assert.throws(() => geminiMessage(gm({ tokens: { input: 1, output: 1, total: 2 } }), 's'));
+  assert.equal(geminiMessage(gm({ tokens: null }), 's'), null);
+  assert.equal(estimate(e).costUsd, '0.0005925');
+  assert.equal(estimate({ ...e, model: 'gemini-2.5-flash' }).costUsd, null);
+  assert.equal(
+    estimate({ ...e, model: 'gemini-2.5-flash', modality: 'text' }).costUsd,
+    '0.0001472',
+  );
+  assert.equal(
+    estimate({ ...e, model: 'gemini-4-argon', occurredAt: '2026-12-01T00:00:00Z' }).costUsd,
+    '0.001288',
+  );
+});
+test('new metadata enriches a duplicate without repricing, mutation or invalidating access', () => {
+  const db = openDb(':memory:', epoch),
+    input = openCodeMessage(oc(), 's', '2.1.4');
+  const old = normalize(input);
+  insertEvent(db, old);
+  const price = JSON.parse(db.prepare('SELECT data FROM events').get().data).costUsd;
+  const access = issue(db, epoch);
+  const session = exchange(db, access.token, epoch);
+  assert.equal(insertEvent(db, input), 'duplicate');
+  assert.equal(JSON.parse(db.prepare('SELECT data FROM events').get().data).costUsd, price);
+  assert.equal(db.prepare('SELECT count(*) n FROM sessions').get().n, 1);
+  assert.equal(
+    db.prepare('SELECT expires FROM sessions WHERE hash=?').get(hash(session.session)).expires,
+    epoch + 8 * 3600000,
+  );
+  const f = filters({ window: '1h' }, epoch + 10);
+  assert.equal(reconcile(db, f).matched, 1);
+  assert.equal(insertEvent(db, { ...input, inputTokens: '101' }), 'conflict');
+  assert.equal(reconcile(db, f).conflicts, 1);
+  insertEvent(db, input);
+  assert.equal(reconcile(db, f).conflicts, 1);
+  db.close();
+});
+test('more than 100 events share provider/session/method filters and reconciliation', () => {
+  const db = openDb(':memory:', epoch);
+  for (let i = 0; i < 180; i++)
+    insertEvent(db, openCodeMessage(oc({ id: String(i) }), i % 2 ? 's1' : 's2', '2.1.4'));
+  const f = filters(
+    { window: '1h', provider: 'openai', sessionId: 's1', method: 'native' },
+    epoch + 100,
+  );
+  assert.equal(analytics(db, f).totals.count, 90);
+  assert.equal(events(db, f).total, 90);
+  assert.equal(reconcile(db, f).matched, 90);
+  assert.equal(reconcile(db, f).sessions.length, 1);
+  assert.equal(analytics(db, f).options.providers[0], 'openai');
+  db.close();
+});
+test('read-only OpenCode collector tracks finalization, restart, old cutoff, conflicts and large batches', () => {
+  const { dir, db } = setup(),
+    path = join(dir, 'opencode.db');
+  const source = new Database(path);
+  source.exec(
+    'CREATE TABLE session_v2(id TEXT PRIMARY KEY,version TEXT); CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_updated INTEGER,data TEXT);',
+  );
+  source.prepare('INSERT INTO session_v2 VALUES (?,?)').run('s', '2.1.4');
+  const put = (m, at) =>
+    source
+      .prepare(
+        'INSERT INTO session_message VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET time_updated=excluded.time_updated,data=excluded.data',
+      )
+      .run(m.id, 's', m.type, at, JSON.stringify(m));
+  put(oc({ time: { created: epoch } }), epoch);
+  put(oc({ id: 'past', time: { created: epoch - 50, completed: epoch - 1 } }), epoch);
+  let collector = new Sources(db, { openCodeDb: path });
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 0);
+  put(oc(), epoch + 1);
+  const before = hash(readFileSync(path)),
+    mtime = statSync(path).mtimeMs;
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
+  assert.equal(hash(readFileSync(path)), before);
+  assert.equal(statSync(path).mtimeMs, mtime);
+  collector = new Sources(db, { openCodeDb: path });
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
+  for (let i = 0; i < 420; i++) put(oc({ id: 'batch-' + String(i).padStart(4, '0') }), epoch + 2);
+  for (let i = 0; i < 5; i++) collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 421);
+  put(oc({ tokens: { ...oc().tokens, input: 11 } }), epoch + 3);
+  collector.scan();
+  assert.equal(
+    db.prepare("SELECT count(*) n FROM errors WHERE kind='response_conflict'").get().n,
+    1,
+  );
+  source.close();
+  db.close();
+  rmSync(dir, { recursive: true });
+});
+test('Gemini JSON and append-only JSONL survive partial records and never persist content', () => {
+  const { dir, db } = setup(),
+    path = join(dir, 'session-test.jsonl'),
+    collector = new Sources(db, { geminiRoot: dir });
+  writeFileSync(
+    path,
+    JSON.stringify({ sessionId: 'session' }) + '\n' + JSON.stringify(gm()) + '\n',
+  );
+  const before = readFileSync(path);
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
+  assert.deepEqual(readFileSync(path), before);
+  const next = JSON.stringify(gm({ id: 'partial', content: 'SECRET PROMPT' })) + '\n';
+  appendFileSync(path, next.slice(0, 15));
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
+  appendFileSync(path, next.slice(15));
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 2);
+  writeFileSync(
+    join(dir, 'session-legacy.json'),
+    JSON.stringify({ sessionId: 'session', messages: [gm({ id: 'legacy' })] }),
+  );
+  collector.scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 3);
+  assert.ok(!JSON.stringify(db.prepare('SELECT data FROM events').all()).includes('SECRET PROMPT'));
+  db.close();
+  rmSync(dir, { recursive: true });
+});
+test('fallback only extracts explicit visible text, rejects tools/media and does not alter native totals', () => {
+  assert.equal(
+    visibleText([
+      { type: 'text', text: 'a' },
+      { type: 'text', text: 'b' },
+    ]),
+    'ab',
+  );
+  assert.equal(visibleText([{ type: 'reasoning', text: 'private' }]), null);
+  assert.equal(visibleText([{ inlineData: {} }]), null);
+  const { dir, db } = setup();
+  let queued;
+  const tokenizer = {
+    enqueue: (input, text) => {
+      queued = { input, text };
+    },
+  };
+  writeFileSync(
+    join(dir, 'session-a.json'),
+    JSON.stringify({ sessionId: 's', messages: [gm({ tokens: null, content: 'hola 👋' })] }),
+  );
+  const collector = new Sources(db, { geminiRoot: dir }, tokenizer);
+  collector.scan();
+  assert.equal(queued.text, 'hola 👋');
+  assert.equal(queued.input.model, 'gemini-2.5-pro');
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 0);
+  db.close();
+  rmSync(dir, { recursive: true });
+});
+test('source and reconciliation routes require authentication and return filtered native provenance', async () => {
+  const db = openDb(':memory:', epoch);
+  const { app, close } = createApp({
+    db,
+    origin: 'https://usage.test',
+    gatewayKey: 'g',
+    ingestKey: 'i',
+    collector: { status: { state: 'running' } },
+    now: () => epoch,
+  });
+  const s = exchange(db, issue(db, epoch).token, epoch);
+  for (const path of ['/api/sources', '/api/reconciliation']) {
+    assert.equal((await request(app).get(path).set('x-usage-monitor-gateway', 'g')).status, 401);
+    assert.equal(
+      (
+        await request(app)
+          .get(path)
+          .set('x-usage-monitor-gateway', 'g')
+          .set('cookie', cookieName + '=' + s.session)
+      ).status,
+      200,
+    );
+  }
+  close();
+  db.close();
+});
+test('Gemini JSONL cursor survives restart, rotation and same-size rewrite without counting old usage', () => {
+  const { dir, db } = setup(),
+    path = join(dir, 'session-rotate.jsonl');
+  const body = (id) =>
+    JSON.stringify({ sessionId: 's' }) + '\n' + JSON.stringify(gm({ id })) + '\n';
+  writeFileSync(path, body('first'));
+  new Sources(db, { geminiRoot: dir }).scan();
+  new Sources(db, { geminiRoot: dir }).scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
+  writeFileSync(path, body('other'));
+  new Sources(db, { geminiRoot: dir }).scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 2);
+  appendFileSync(
+    path,
+    JSON.stringify(gm({ id: 'past', timestamp: new Date(epoch - 1).toISOString() })) + '\n',
+  );
+  new Sources(db, { geminiRoot: dir }).scan();
+  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 2);
+  db.close();
+  rmSync(dir, { recursive: true });
+});

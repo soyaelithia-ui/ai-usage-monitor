@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0b1011" />
+    <title>Acceso privado · AI Usage Monitor</title>
+    <link rel="stylesheet" href="/access.css" />
+  </head>
+  <body>
+    <main>
+      <a class="brand" href="/access"><span>ϟ</span> Consumo IA<span class="dot">●</span></a>
+      <div class="eyebrow">TU CONSUMO, EN PERSPECTIVA</div>
+      <h1>Un espacio privado.<br /><em>Tu actividad de IA.</em></h1>
+      <p>Introduce tu token de un solo uso para abrir el panel en este navegador.</p>
+      <form id="access-form">
+        <label for="token">Token de acceso</label
+        ><input
+          id="token"
+          name="token"
+          type="password"
+          autocomplete="off"
+          required
+          spellcheck="false"
+          maxlength="64"
+          autofocus
+        /><button type="submit">Abrir mi panel <span>↗</span></button>
+        <p id="error" role="alert"></p>
+      </form>
+      <footer>
+        Acceso válido hasta 8 horas desde su emisión.<br />Introduce el token únicamente en esta
+        página.
+      </footer>
+    </main>
+    <script src="/access.js" defer></script>
+  </body>
+</html>

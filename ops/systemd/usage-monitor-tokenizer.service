@@ -1,0 +1,40 @@
+[Unit]
+Description=Optional local text tokenization worker
+
+[Service]
+Type=simple
+User=usage-monitor
+Group=usage-monitor
+WorkingDirectory=/opt/ai-usage-monitor
+Environment=USAGE_MONITOR_TOKENIZER_CACHE=/var/lib/ai-usage-monitor/tokenizer-cache
+Environment=USAGE_MONITOR_TOKENIZER_SOCKET=/var/lib/ai-usage-monitor/tokenizer.sock
+Environment=TIKTOKEN_CACHE_DIR=/var/lib/ai-usage-monitor/tokenizer-cache/tiktoken
+Environment=HF_HUB_OFFLINE=1
+Environment=TRANSFORMERS_OFFLINE=1
+Environment=PYTHONWARNINGS=ignore
+ExecStart=/var/lib/ai-usage-monitor/tokenizer-venv/bin/python worker/tokenizer.py
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+InaccessiblePaths=/etc/ai-usage-monitor /var/lib/ai-usage-monitor/usage.sqlite -/var/lib/ai-usage-monitor/usage.sqlite-wal -/var/lib/ai-usage-monitor/usage.sqlite-shm -/var/lib/ai-usage-monitor/backups -/srv/agent-logs
+ReadWritePaths=/var/lib/ai-usage-monitor
+ReadOnlyPaths=/var/lib/ai-usage-monitor/tokenizer-venv /var/lib/ai-usage-monitor/tokenizer-cache
+MemoryMax=512M
+TasksMax=16
+CPUQuota=25%
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

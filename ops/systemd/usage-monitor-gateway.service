@@ -1,0 +1,32 @@
+[Unit]
+Description=AI usage authenticated gateway
+After=network.target usage-monitor-backend.service
+Wants=usage-monitor-backend.service
+
+[Service]
+Type=simple
+User=usage-monitor-gateway
+Group=usage-monitor-gateway
+WorkingDirectory=/opt/ai-usage-monitor
+Environment=USAGE_MONITOR_CONFIG=/etc/ai-usage-monitor/gateway.json
+ExecStart=/usr/bin/node server/gateway-main.js
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+InaccessiblePaths=/var/lib/ai-usage-monitor /etc/ai-usage-monitor/backend.json -/srv/agent-logs
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
