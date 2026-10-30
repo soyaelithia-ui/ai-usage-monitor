@@ -71,7 +71,6 @@ El usuario que ejecute ese comando necesita permisos sobre los directorios elegi
 | ----------------- | --------------------------------------------------------------------------------------- |
 | `codexRoot`       | Directorio de registros JSONL con consumo por respuesta.                                |
 | `openCodeDb`      | Base SQLite de sesiones de OpenCode 2.1.4.                                              |
-| `geminiRoot`      | Directorio de sesiones JSON o JSONL de Gemini CLI.                                      |
 | `antigravityRoot` | Directorio de conversaciones para comprobar la disponibilidad de registros compatibles. |
 
 Las rutas se configuran explícitamente. Un lector sin ruta permanece a la espera, sin importar historial ni generar eventos ficticios. Concede acceso de solo lectura a las fuentes y reinicia el backend después de cambiar la configuración. La fecha de activación se conserva en la base de datos; el recolector descarta consumo anterior a ese corte.
@@ -95,7 +94,9 @@ npm run tokenizer
 
 Si elegiste otro directorio de datos, establece `USAGE_MONITOR_DATA_DIR` al instalar los tokenizadores. El proceso utiliza el mismo archivo de configuración que el backend.
 
-Se emplean versiones fijadas de tiktoken y Google Gen AI SDK. Los vocabularios se descargan y verifican durante la instalación. La ejecución local utiliza únicamente vocabularios disponibles y correspondencias oficiales; un modelo desconocido se declara sin soporte. Las estimaciones de texto visible se muestran por separado y no se añaden a los totales nativos ni al coste completo de una llamada.
+Se emplean versiones fijadas de tiktoken, tokenizers (Hugging Face) y SentencePiece; los hashes están en `worker/requirements.lock`. Los vocabularios oficiales (Qwen, DeepSeek, GLM, Kimi, ChatGLM, Baichuan, Yi, MiniCPM, Llama, Mistral) se descargan en su revisión fijada y se verifican por checksum durante la instalación, y el worker vuelve a verificarlos antes de cada uso. La ejecución local no accede a la red: un modelo sin vocabulario instalado o sin correspondencia oficial se declara sin soporte. Las estimaciones de texto visible se muestran por separado y no se añaden a los totales nativos ni al coste completo de una llamada.
+
+Añadir un agente lector o un vocabulario nuevo significa ampliar `server/catalog.js` o `worker/vocabularies.json`; ningún lector contiene ramas por agente.
 
 ## API
 

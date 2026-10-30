@@ -1,22 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  mkdtempSync,
-  readFileSync,
-  writeFileSync,
-  appendFileSync,
-  statSync,
-  rmSync,
-  mkdirSync,
-} from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import request from 'supertest';
-import { openCodeMessage, geminiMessage, visibleText } from '../server/adapters.js';
+import { openCodeMessage, visibleText } from '../server/adapters.js';
 import { Sources } from '../server/sources.js';
-import { Collector } from '../server/collector.js';
-import { normalize, estimate } from '../server/usage.js';
+import { normalize } from '../server/usage.js';
 import {
   openDb,
   insertEvent,
@@ -38,17 +29,24 @@ const oc = (extra = {}) => ({
   tokens: { input: 10, output: 20, reasoning: 30, cache: { read: 40, write: 50 } },
   ...extra,
 });
-const gm = (extra = {}) => ({
-  id: 'gemini-1',
-  type: 'gemini',
-  model: 'gemini-2.5-pro',
-  timestamp: new Date(epoch + 1).toISOString(),
-  tokens: { input: 100, output: 20, thoughts: 30, tool: 10, cached: 40, total: 160 },
-  ...extra,
-});
 const setup = () => {
   const dir = mkdtempSync(join(tmpdir(), 'usage-monitor-native-'));
   return { dir, db: openDb(':memory:', epoch) };
+};
+const openCodeFixture = (dir) => {
+  const path = join(dir, 'opencode.db');
+  const source = new Database(path);
+  source.exec(
+    'CREATE TABLE session_v2(id TEXT PRIMARY KEY,version TEXT); CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_updated INTEGER,data TEXT);',
+  );
+  source.prepare('INSERT INTO session_v2 VALUES (?,?)').run('s', '2.1.4');
+  const put = (m, at) =>
+    source
+      .prepare(
+        'INSERT INTO session_message VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET time_updated=excluded.time_updated,data=excluded.data',
+      )
+      .run(m.id, 's', m.type, at, JSON.stringify(m));
+  return { path, source, put };
 };
 test('synthetic usage fixture preserves exact totals and decimal components', () => {
   const db = openDb(':memory:', epoch);
@@ -79,29 +77,6 @@ test('OpenCode 2.1.4 semantics, complete-only and precision; unknown schemas rej
   const comp = oc({ type: 'compaction', status: 'completed' });
   assert.equal(openCodeMessage(comp, 's', '2.1.4').inputTokens, '100');
   assert.equal(openCodeMessage({ ...comp, status: 'running' }, 's', '2.1.4'), null);
-});
-test('Google input includes tools; output includes thoughts; cache is a subset and total reconciles', () => {
-  const e = normalize(geminiMessage(gm(), 's'));
-  assert.equal(e.inputTokens, '110');
-  assert.equal(e.outputTokens, '50');
-  assert.equal(e.totalTokens, '160');
-  assert.equal(e.cachedInputTokens, '40');
-  assert.throws(
-    () => geminiMessage(gm({ tokens: { ...gm().tokens, total: 150 } }), 's'),
-    /total_mismatch/,
-  );
-  assert.throws(() => geminiMessage(gm({ tokens: { input: 1, output: 1, total: 2 } }), 's'));
-  assert.equal(geminiMessage(gm({ tokens: null }), 's'), null);
-  assert.equal(estimate(e).costUsd, '0.0005925');
-  assert.equal(estimate({ ...e, model: 'gemini-2.5-flash' }).costUsd, null);
-  assert.equal(
-    estimate({ ...e, model: 'gemini-2.5-flash', modality: 'text' }).costUsd,
-    '0.0001472',
-  );
-  assert.equal(
-    estimate({ ...e, model: 'gemini-4-argon', occurredAt: '2026-12-01T00:00:00Z' }).costUsd,
-    '0.001288',
-  );
 });
 test('new metadata enriches a duplicate without repricing, mutation or invalidating access', () => {
   const db = openDb(':memory:', epoch),
@@ -143,18 +118,7 @@ test('more than 100 events share provider/session/method filters and reconciliat
 });
 test('read-only OpenCode collector tracks finalization, restart, old cutoff, conflicts and large batches', () => {
   const { dir, db } = setup(),
-    path = join(dir, 'opencode.db');
-  const source = new Database(path);
-  source.exec(
-    'CREATE TABLE session_v2(id TEXT PRIMARY KEY,version TEXT); CREATE TABLE session_message(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_updated INTEGER,data TEXT);',
-  );
-  source.prepare('INSERT INTO session_v2 VALUES (?,?)').run('s', '2.1.4');
-  const put = (m, at) =>
-    source
-      .prepare(
-        'INSERT INTO session_message VALUES (?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET time_updated=excluded.time_updated,data=excluded.data',
-      )
-      .run(m.id, 's', m.type, at, JSON.stringify(m));
+    { path, source, put } = openCodeFixture(dir);
   put(oc({ time: { created: epoch } }), epoch);
   put(oc({ id: 'past', time: { created: epoch - 50, completed: epoch - 1 } }), epoch);
   let collector = new Sources(db, { openCodeDb: path });
@@ -183,35 +147,6 @@ test('read-only OpenCode collector tracks finalization, restart, old cutoff, con
   db.close();
   rmSync(dir, { recursive: true });
 });
-test('Gemini JSON and append-only JSONL survive partial records and never persist content', () => {
-  const { dir, db } = setup(),
-    path = join(dir, 'session-test.jsonl'),
-    collector = new Sources(db, { geminiRoot: dir });
-  writeFileSync(
-    path,
-    JSON.stringify({ sessionId: 'session' }) + '\n' + JSON.stringify(gm()) + '\n',
-  );
-  const before = readFileSync(path);
-  collector.scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
-  assert.deepEqual(readFileSync(path), before);
-  const next = JSON.stringify(gm({ id: 'partial', content: 'SECRET PROMPT' })) + '\n';
-  appendFileSync(path, next.slice(0, 15));
-  collector.scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
-  appendFileSync(path, next.slice(15));
-  collector.scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 2);
-  writeFileSync(
-    join(dir, 'session-legacy.json'),
-    JSON.stringify({ sessionId: 'session', messages: [gm({ id: 'legacy' })] }),
-  );
-  collector.scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 3);
-  assert.ok(!JSON.stringify(db.prepare('SELECT data FROM events').all()).includes('SECRET PROMPT'));
-  db.close();
-  rmSync(dir, { recursive: true });
-});
 test('fallback only extracts explicit visible text, rejects tools/media and does not alter native totals', () => {
   assert.equal(
     visibleText([
@@ -229,14 +164,19 @@ test('fallback only extracts explicit visible text, rejects tools/media and does
       queued = { input, text };
     },
   };
-  writeFileSync(
-    join(dir, 'session-a.json'),
-    JSON.stringify({ sessionId: 's', messages: [gm({ tokens: null, content: 'hola 👋' })] }),
+  const { path, put } = openCodeFixture(dir);
+  put(
+    oc({
+      tokens: undefined,
+      content: [{ type: 'text', text: 'hola 👋' }],
+    }),
+    epoch + 1,
   );
-  const collector = new Sources(db, { geminiRoot: dir }, tokenizer);
+  const collector = new Sources(db, { openCodeDb: path }, tokenizer);
   collector.scan();
   assert.equal(queued.text, 'hola 👋');
-  assert.equal(queued.input.model, 'gemini-2.5-pro');
+  assert.equal(queued.input.model, 'gpt-6-astra');
+  assert.equal(queued.input.agent, 'OpenCode');
   assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 0);
   db.close();
   rmSync(dir, { recursive: true });
@@ -266,25 +206,4 @@ test('source and reconciliation routes require authentication and return filtere
   }
   close();
   db.close();
-});
-test('Gemini JSONL cursor survives restart, rotation and same-size rewrite without counting old usage', () => {
-  const { dir, db } = setup(),
-    path = join(dir, 'session-rotate.jsonl');
-  const body = (id) =>
-    JSON.stringify({ sessionId: 's' }) + '\n' + JSON.stringify(gm({ id })) + '\n';
-  writeFileSync(path, body('first'));
-  new Sources(db, { geminiRoot: dir }).scan();
-  new Sources(db, { geminiRoot: dir }).scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 1);
-  writeFileSync(path, body('other'));
-  new Sources(db, { geminiRoot: dir }).scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 2);
-  appendFileSync(
-    path,
-    JSON.stringify(gm({ id: 'past', timestamp: new Date(epoch - 1).toISOString() })) + '\n',
-  );
-  new Sources(db, { geminiRoot: dir }).scan();
-  assert.equal(db.prepare('SELECT count(*) n FROM events').get().n, 2);
-  db.close();
-  rmSync(dir, { recursive: true });
 });

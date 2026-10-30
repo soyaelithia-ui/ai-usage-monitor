@@ -60,7 +60,7 @@ function Chart({ data, cost = false }) {
     y = (v) => 160 - (Number(v) / max) * 125;
   const chosen = selected === null ? null : rows[selected];
   return (
-    <section className="panel chart-panel">
+    <section className="panel chart-panel reveal">
       <div className="panel-heading">
         <div>
           <h2>{cost ? 'Coste acumulado' : 'El ritmo de tus tokens'}</h2>
@@ -220,7 +220,7 @@ function Distribution({ data }) {
   const rows = data[kind];
   const max = Math.max(1, ...rows.map((r) => Number(r.totalTokens)));
   return (
-    <section className="panel distribution">
+    <section className="panel distribution reveal">
       <div className="panel-heading">
         <div>
           <h2>De dónde viene</h2>
@@ -268,12 +268,11 @@ function Distribution({ data }) {
     </section>
   );
 }
-const sourceLabels = {
-  codex: 'Codex',
-  opencode: 'OpenCode',
-  gemini: 'Gemini CLI',
-  antigravity: 'Antigravity',
-};
+const fallbackSources = [
+  { id: 'codex', name: 'Codex' },
+  { id: 'opencode', name: 'OpenCode' },
+  { id: 'antigravity', name: 'Antigravity' },
+];
 const stateLabels = {
   running: 'Activo · cada 2 s',
   waiting: 'Esperando registros',
@@ -285,7 +284,7 @@ const stateLabels = {
 function Breakdown({ data }) {
   const t = data.totals;
   return (
-    <section className="panel breakdown">
+    <section className="panel breakdown reveal">
       <div className="panel-heading">
         <div>
           <h2>Qué se está contando</h2>
@@ -332,11 +331,14 @@ function Breakdown({ data }) {
   );
 }
 function SourcesPanel({ sources, reconciliation, agent }) {
+  const sourceLabels = Object.fromEntries(
+    (sources?.agents ?? fallbackSources).map((a) => [a.id, a.name]),
+  );
   return (
-    <section className="panel sources">
+    <section className="panel sources reveal" aria-labelledby="sources-title">
       <div className="panel-heading">
         <div>
-          <h2>Fuentes y precisión</h2>
+          <h2 id="sources-title">Fuentes y precisión</h2>
           <p>Lectura pasiva · no modifica los agentes ni sus registros</p>
         </div>
       </div>
@@ -355,20 +357,21 @@ function SourcesPanel({ sources, reconciliation, agent }) {
         <p>
           Tokenizadores locales:{' '}
           {sources?.tokenizer?.state === 'ready' ? 'disponibles, sin red' : 'no disponibles'}.
-          tiktoken {sources?.tokenizer?.versions?.tiktoken ?? '—'} · Google SDK{' '}
-          {sources?.tokenizer?.versions?.['google-genai'] ?? '—'}.
+          tiktoken {sources?.tokenizer?.versions?.tiktoken ?? '—'} · tokenizers{' '}
+          {sources?.tokenizer?.versions?.tokenizers ?? '—'} · SentencePiece{' '}
+          {sources?.tokenizer?.versions?.sentencepiece ?? '—'}.
         </p>
         <p>
-          GPT-6/Astra: se utiliza el contador nativo; tiktoken no publica una correspondencia para
-          estos modelos. Google LocalTokenizer es experimental y solo cuenta texto. Las estimaciones
-          locales parciales se mantienen fuera de los totales y del coste.
+          Los modelos sin contador nativo se estiman con vocabularios locales verificados (Qwen,
+          DeepSeek, GLM, Kimi, Baichuan, Yi, MiniCPM, Llama, Mistral). Las estimaciones de texto
+          visible se mantienen fuera de los totales y del coste.
         </p>
         <details>
-          <summary>Modelos de Google con tokenizador local instalado</summary>
-          <p>{sources?.tokenizer?.googleModels?.join(' · ') ?? 'Sin información'}</p>
+          <summary>Vocabularios locales instalados</summary>
           <p>
-            Vocabulario no instalado: {sources?.tokenizer?.googleUnavailable?.join(' · ') ?? '—'}.
-            Otros modelos requieren un mapeo oficial antes de activar la estimación.
+            {(sources?.tokenizer?.vocabularies ?? [])
+              .map((v) => `${v.id}${v.installed ? '' : ' (sin instalar)'}`)
+              .join(' · ') || 'Sin información'}
           </p>
         </details>
         {reconciliation && (
@@ -428,10 +431,12 @@ function App() {
     [error, setError] = useState(''),
     [clock, setClock] = useState(Date.now()),
     [tab, setTab] = useState('overview'),
+    [pulse, setPulse] = useState(0),
     [loadedQuery, setLoadedQuery] = useState('');
   const ended = useRef(false),
     current = useRef({ window, agent, model, provider, sessionId, method, offset }),
-    trigger = useRef(() => {});
+    trigger = useRef(() => {}),
+    signature = useRef('');
   current.current = { window, agent, model, provider, sessionId, method, offset };
   const clear = () => {
     if (ended.current) return;
@@ -502,6 +507,12 @@ function App() {
           setReconciliation(r);
           setLoadedQuery(JSON.stringify(f));
           setError('');
+          // A visible pulse only when the underlying usage actually changed.
+          const next = a.totals ? `${a.totals.count}:${a.totals.totalTokens}` : '';
+          if (next !== signature.current) {
+            signature.current = next;
+            setPulse((p) => p + 1);
+          }
         }
       } catch (e) {
         if (!stopped && e.name !== 'AbortError')
@@ -556,6 +567,27 @@ function App() {
   useEffect(() => {
     trigger.current();
   }, [window, agent, model, provider, sessionId, method, offset]);
+  // Sections slide in as they enter the viewport; the flag is only enabled
+  // when motion is allowed, so content never stays hidden without animation.
+  useEffect(() => {
+    if (document.defaultView?.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (typeof IntersectionObserver === 'undefined') return;
+    document.documentElement.classList.add('fx-reveal');
+    const nodes = document.querySelectorAll('.reveal:not(.in)');
+    if (!nodes.length) return;
+    const io = new IntersectionObserver(
+      (entries) =>
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            entry.target.classList.add('in');
+            io.unobserve(entry.target);
+          }
+        }),
+      { rootMargin: '0px 0px -6% 0px' },
+    );
+    nodes.forEach((n) => io.observe(n));
+    return () => io.disconnect();
+  }, [data, tab, agent]);
   const change = (setter, v) => {
     setOffset(0);
     setter(v);
@@ -582,7 +614,7 @@ function App() {
     setOffset(0);
     setTab('overview');
   };
-  const agents = agentList(data?.options.agents ?? []),
+  const agents = agentList(data?.options.agents ?? [], sources?.agents ?? []),
     selectedAgent = agents.find((x) => x.name === agent),
     pending = loadedQuery !== JSON.stringify(current.current);
   const remaining = session ? Math.max(0, Date.parse(session.expiresAt) - clock) : 0;
@@ -641,7 +673,7 @@ function App() {
           </div>
         </header>
         <main>
-          <div className="page-title">
+          <div className="page-title reveal">
             <div>
               <div className="eyebrow">OBSERVABILIDAD DE IA</div>
               <h1>
@@ -662,7 +694,7 @@ function App() {
               {connection}
             </span>
           </div>
-          <div className="toolbar">
+          <div className="toolbar reveal">
             <div className="segments" aria-label="Ventana de tiempo">
               {[
                 ['15m', '15 min'],
@@ -785,7 +817,7 @@ function App() {
                   />
                 )
               )}
-              <div className="stats">
+              <div className="stats" key={pulse}>
                 <article className="stat">
                   <div>
                     Tokens totales <span>◈</span>
@@ -851,7 +883,7 @@ function App() {
                   )}
                 </div>
               )}
-              <div className="subscription-note">
+              <div className="subscription-note reveal">
                 <strong>Equivalencia de API, no gasto de tu suscripción.</strong> AI Usage Monitor
                 no consulta tu factura ni atribuye cargos adicionales. Los importes simulan este
                 consumo con tarifas públicas.
@@ -866,7 +898,7 @@ function App() {
                   </div>
                 </>
               )}
-              <section className="panel history">
+              <section className="panel history reveal">
                 <div className="panel-heading">
                   <div>
                     <h2>
@@ -993,7 +1025,7 @@ function App() {
                 )}
               </section>
               <SourcesPanel sources={sources} reconciliation={reconciliation} agent={agent} />
-              <details className="pricing-note">
+              <details className="pricing-note reveal">
                 <summary>Cómo se estima el coste</summary>
                 <p>
                   {data.pricingNote} Los desgloses ausentes se muestran como desconocidos; los

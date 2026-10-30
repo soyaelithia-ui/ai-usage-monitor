@@ -59,7 +59,6 @@ writeFileSync(
       tokenizerSocket: join(dataDir, 'tokenizer.sock'),
       codexRoot: null,
       openCodeDb: null,
-      geminiRoot: null,
       antigravityRoot: null,
     },
     null,

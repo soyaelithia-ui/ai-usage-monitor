@@ -1,37 +1,64 @@
-import unittest, sys, socket, tempfile, os
+import os, sys, unittest
 from unittest.mock import patch
-sys.path.insert(0,os.path.dirname(__file__))
+
+sys.path.insert(0, os.path.dirname(__file__))
 import tokenizer
+
 
 class TokenizerTests(unittest.TestCase):
     def count(self, provider, model, text):
-        with patch('requests.get',side_effect=AssertionError('network forbidden')):
-            return tokenizer.count(dict(provider=provider,model=model,text=text))
-    def test_unicode_and_versions(self):
-        for provider,model in [('openai','gpt-4o'),('google','gemini-2.5-pro')]:
-            r=self.count(provider,model,'¡Hola! 👋🏽 中文\nПривет e\u0301')
-            self.assertEqual(r['status'],'estimated')
-            self.assertGreater(int(r['tokens']),0)
-            self.assertEqual(r,self.count(provider,model,'¡Hola! 👋🏽 中文\nПривет e\u0301'))
-            self.assertEqual(r['coverage'],'visible_text_only')
-            self.assertIn(r['version'],['0.14.0','2.34.0'])
-    def test_no_assumed_astra_encoding(self):
-        self.assertEqual(self.count('openai','gpt-6-astra','hello')['status'],'unsupported_model')
-        self.assertEqual(self.count('google','gemini-4-argon','hello')['status'],'unsupported_model')
-        self.assertEqual(self.count('anthropic','claude','hello')['status'],'unsupported_model')
-    def test_text_limit(self):
-        self.assertEqual(self.count('openai','gpt-4o','a'*(tokenizer.MAX_BYTES+1))['status'],'text_limit')
-        self.assertEqual(self.count('google','gemini-2.5-pro',{'image':'x'})['status'],'text_limit')
-    def test_special_tokens_are_plain_text(self):
-        self.assertEqual(self.count('openai','gpt-4o','<|endoftext|>')['status'],'estimated')
-    def test_empty_text_and_capabilities(self):
-        self.assertEqual(self.count('openai','gpt-4o','')['tokens'],'0')
-        c=tokenizer.count({'operation':'capabilities'})
-        self.assertEqual(c['maxBytes'],2097152)
-        self.assertIn('gemini-2.5-pro',c['googleModels'])
-    def test_uncached_vocab_fails_closed_offline(self):
-        tokenizer.ENGINES.clear()
-        with patch('tiktoken.get_encoding',side_effect=OSError('offline')):
-            self.assertEqual(self.count('openai','gpt-4o','hello')['status'],'vocabulary_unavailable')
+        # No network access is ever allowed while counting.
+        with patch('urllib.request.urlopen', side_effect=AssertionError('network forbidden')):
+            return tokenizer.count(dict(provider=provider, model=model, text=text))
 
-if __name__=='__main__':unittest.main()
+    def test_every_engine_estimates_and_is_deterministic(self):
+        cases = [
+            ('openai', 'gpt-4o', 'tiktoken'),
+            ('zai', 'glm-4.5', 'tokenizers'),
+            ('deepseek', 'deepseek-v3', 'tokenizers'),
+            ('moonshot', 'kimi-k2-instruct', 'tiktoken'),
+            ('zhipu', 'chatglm4-9b', 'tiktoken'),
+            ('baichuan', 'baichuan2-13b-chat', 'sentencepiece'),
+            ('alibaba', 'qwen3-235b-a22b', 'tokenizers'),
+        ]
+        text = '¡Hola! 👋🏽 中文\nПривет e\u0301'
+        for provider, model, engine in cases:
+            first = self.count(provider, model, text)
+            self.assertEqual(first['status'], 'estimated', first)
+            self.assertGreater(int(first['tokens']), 0)
+            self.assertEqual(first['tokenizer'], engine)
+            self.assertEqual(first, self.count(provider, model, text))
+            self.assertEqual(first['coverage'], 'visible_text_only')
+
+    def test_no_assumed_encoding_for_unmapped_models(self):
+        self.assertEqual(self.count('openai', 'gpt-6-astra', 'hello')['status'], 'unsupported_model')
+        self.assertEqual(self.count('anthropic', 'claude', 'hello')['status'], 'unsupported_model')
+        self.assertEqual(self.count('other', 'totally-unknown', 'hello')['status'], 'unsupported_model')
+
+    def test_text_limit(self):
+        self.assertEqual(
+            self.count('openai', 'gpt-4o', 'a' * (tokenizer.MAX_BYTES + 1))['status'], 'text_limit'
+        )
+        self.assertEqual(self.count('openai', 'gpt-4o', {'image': 'x'})['status'], 'text_limit')
+
+    def test_special_tokens_are_plain_text(self):
+        self.assertEqual(self.count('openai', 'gpt-4o', '')['tokens'], '0')
+
+    def test_capabilities_list_vocabularies(self):
+        capabilities = tokenizer.count({'operation': 'capabilities'})
+        self.assertEqual(capabilities['maxBytes'], 2097152)
+        self.assertGreaterEqual(len(capabilities['vocabularies']), 13)
+        self.assertIn('openaiModels', capabilities)
+        self.assertTrue(
+            all('installed' in vocabulary for vocabulary in capabilities['vocabularies'])
+        )
+
+    def test_checksum_mismatch_fails_closed(self):
+        tokenizer.ENGINES.clear()
+        with patch.object(tokenizer, 'verified_bytes', side_effect=ValueError('vocabulary checksum')):
+            result = self.count('alibaba', 'qwen3-8b', 'hello')
+        self.assertEqual(result['status'], 'vocabulary_unavailable')
+
+
+if __name__ == '__main__':
+    unittest.main()

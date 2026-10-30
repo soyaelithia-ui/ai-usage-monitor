@@ -17,8 +17,6 @@ const child = spawn(
       TIKTOKEN_CACHE_DIR: join(cache, 'tiktoken'),
       USAGE_MONITOR_TOKENIZER_CACHE: cache,
       USAGE_MONITOR_TOKENIZER_SOCKET: c.tokenizerSocket,
-      HF_HUB_OFFLINE: '1',
-      TRANSFORMERS_OFFLINE: '1',
       PYTHONWARNINGS: 'ignore',
     },
   },

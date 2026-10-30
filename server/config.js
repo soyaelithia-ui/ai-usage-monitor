@@ -48,15 +48,15 @@ export function config() {
   )
     throw Error('Invalid independent ingestion credential');
   c.origin = origin.origin;
-  for (const key of [
-    'db',
-    'dataDir',
-    'codexRoot',
-    'openCodeDb',
-    'geminiRoot',
-    'antigravityRoot',
-    'tokenizerSocket',
-  ])
-    if (c[key]) c[key] = resolve(dirname(path), c[key]);
+  // Every configured path is resolved relative to the configuration file,
+  // whatever agents the catalogue declares: *Root/*Db plus fixed locations.
+  for (const [key, value] of Object.entries(c))
+    if (
+      value &&
+      (key.endsWith('Root') ||
+        key.endsWith('Db') ||
+        ['db', 'dataDir', 'tokenizerSocket'].includes(key))
+    )
+      c[key] = resolve(dirname(path), value);
   return c;
 }

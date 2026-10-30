@@ -1438,3 +1438,80 @@ header > span {
     font-size: 0;
   }
 }
+
+/* Live and scroll animation layer. The html.fx-reveal flag is only set by the
+   app when IntersectionObserver exists and the user allows motion, so content
+   stays visible without JavaScript or under prefers-reduced-motion. */
+html {
+  scroll-behavior: smooth;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(165, 237, 198, 0.45);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 0 4px rgba(165, 237, 198, 0);
+  }
+}
+@keyframes draw {
+  from {
+    stroke-dashoffset: 340;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.fx-reveal .reveal:not(.in) {
+  opacity: 0;
+  transform: translateY(14px);
+}
+.reveal.in {
+  animation: rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+.stat {
+  animation: rise 0.4s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+.stat:nth-child(2) {
+  animation-delay: 40ms;
+}
+.stat:nth-child(3) {
+  animation-delay: 80ms;
+}
+.stat:nth-child(4) {
+  animation-delay: 120ms;
+}
+.agent-card {
+  animation: rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+}
+.live:not(.offline) i {
+  animation: pulse-dot 2.2s ease-in-out infinite;
+}
+.agent-source-state.state-running i {
+  animation: pulse-dot 2.2s ease-in-out infinite;
+}
+.agent-sparkline polyline {
+  stroke-dasharray: 340;
+  animation: draw 1.1s ease-out;
+}
+.agent-navigation button,
+.segments button,
+.pagination button,
+.filters select {
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}

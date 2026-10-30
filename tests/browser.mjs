@@ -117,7 +117,7 @@ try {
         });
       api.broadcast();
       await page.getByText('155 respuestas en esta selección', { exact: true }).waitFor();
-      assert.equal(await page.locator('.agent-card').count(), 4);
+      assert.equal(await page.locator('.agent-card').count(), 3);
       await page
         .getByRole('button', { name: 'Abrir apartado de Antigravity', exact: true })
         .click();
@@ -158,10 +158,6 @@ try {
       await page.getByRole('button', { name: 'Apartado OpenCode', exact: true }).click();
       await page.getByRole('heading', { name: 'OpenCode, en tiempo real.', exact: true }).waitFor();
       await page.getByRole('heading', { name: 'Esperando la próxima respuesta' }).waitFor();
-      await page.getByRole('button', { name: 'Apartado Gemini CLI', exact: true }).click();
-      await page
-        .getByRole('heading', { name: 'Gemini CLI, en tiempo real.', exact: true })
-        .waitFor();
       await page.getByRole('button', { name: 'Apartado Codex', exact: true }).click();
       await page.getByRole('heading', { name: 'Codex, en tiempo real.', exact: true }).waitFor();
       await page.getByText('78 respuestas en esta selección', { exact: true }).waitFor();

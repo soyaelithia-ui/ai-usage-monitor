@@ -104,7 +104,7 @@ try {
   await page.screenshot({ path: 'test-results/production-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
   const agentChecks = [];
-  for (const name of ['Codex', 'Antigravity', 'OpenCode', 'Gemini CLI']) {
+  for (const name of ['Codex', 'Antigravity', 'OpenCode']) {
     await page.getByRole('button', { name: `Apartado ${name}`, exact: true }).click();
     await page.getByRole('heading', { name: `${name}, en tiempo real.`, exact: true }).waitFor();
     await page.getByRole('region', { name: `Estado de ${name}`, exact: true }).waitFor();

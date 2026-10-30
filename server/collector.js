@@ -2,17 +2,19 @@ import { readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import JSONbig from 'json-bigint';
 import { hash, insertEvent, recordError } from './db.js';
+import { catalogMessage } from './adapters.js';
+import { agents } from './catalog.js';
 const parse = JSONbig({
   storeAsString: true,
   protoAction: 'error',
   constructorAction: 'error',
 }).parse;
-function files(root) {
+function files(root, pattern) {
   const out = [];
   for (const d of readdirSync(root, { withFileTypes: true })) {
     const p = join(root, d.name);
-    if (d.isDirectory()) out.push(...files(p));
-    else if (d.isFile() && /\.jsonl(?:\.[\w-]+)?$/.test(d.name)) out.push(p);
+    if (d.isDirectory()) out.push(...files(p, pattern));
+    else if (d.isFile() && pattern.test(d.name)) out.push(p);
   }
   return out.sort();
 }
@@ -23,9 +25,14 @@ function signature(fd, offset) {
   return hash(b);
 }
 export class Collector {
-  constructor(db, root, onChange = () => {}) {
+  constructor(db, root, agent, onChange = () => {}) {
     this.db = db;
     this.root = root;
+    // The declarative catalogue entry drives everything: markers, record
+    // types, the model context and the usage paths. No per-agent branches.
+    this.agent = agent ?? agents.find((a) => a.reader === 'jsonl');
+    if (!this.agent) throw Error('Sin agente JSONL en el catálogo');
+    this.pattern = new RegExp(this.agent.filePattern);
     this.onChange = onChange;
     this.status = { state: 'starting', lastScan: null, lastEvent: null, files: 0 };
   }
@@ -43,7 +50,7 @@ export class Collector {
     let changed = false;
     this.scanFailed = false;
     try {
-      const list = files(this.root);
+      const list = files(this.root, this.pattern);
       this.status.files = list.length;
       for (const path of list) changed = this.read(path) || changed;
       this.status.state = this.scanFailed ? 'error' : 'running';
@@ -95,49 +102,35 @@ export class Collector {
             if (!line) continue;
             try {
               // Do not deserialize or persist conversation content.
-              if (!line.includes('"turn_context"') && !line.includes('"token_usage_record"')) {
+              if (!this.agent.markers.some((marker) => line.includes(marker))) {
                 byteOffset += Buffer.byteLength(line) + 1;
                 continue;
               }
-              const r = parse(line),
-                p = r.payload ?? {};
-              if (
-                r.type === 'turn_context' &&
-                typeof p.turn_id === 'string' &&
-                typeof p.model === 'string'
-              )
-                this.db
-                  .prepare(
-                    'INSERT INTO contexts VALUES (?,?) ON CONFLICT(turn) DO UPDATE SET model=excluded.model',
-                  )
-                  .run(p.turn_id, p.model);
-              if (r.type === 'token_usage_record' || p.type === 'token_usage_record') {
-                const time = Date.parse(r.timestamp);
+              const r = parse(line);
+              const ctx = this.agent.context;
+              if (ctx && (r.type === ctx.recordType || r.payload?.type === ctx.recordType)) {
+                const turn = this.pluck(r, ctx.key),
+                  model = this.pluck(r, ctx.model);
+                if (typeof turn === 'string' && typeof model === 'string')
+                  this.db
+                    .prepare(
+                      'INSERT INTO contexts VALUES (?,?) ON CONFLICT(turn) DO UPDATE SET model=excluded.model',
+                    )
+                    .run(turn, model);
+              }
+              const type = r.type ?? r.payload?.type;
+              if (this.agent.recordTypes?.includes(type)) {
+                const time = Date.parse(this.pluck(r, this.agent.usage.occurredAt));
                 if (!Number.isFinite(time)) throw Error('invalid_timestamp');
                 if (time >= activation) {
-                  const model = this.db
-                    .prepare('SELECT model FROM contexts WHERE turn=?')
-                    .get(p.turn_id ?? '')?.model;
-                  const u = p.usage;
-                  if (!u || !p.response_id) throw Error('invalid_usage');
-                  const result = insertEvent(this.db, {
-                    source: 'codex',
-                    method: 'native',
-                    sourceVersion: 'codex.token_usage_record.v1',
-                    coverage: 'provider_response_usage',
-                    sessionId: p.session_id ?? p.thread_id,
-                    turnId: p.turn_id,
-                    provider: 'openai',
-                    agent: 'Codex',
-                    model: model ?? 'unknown',
-                    responseId: p.response_id,
-                    occurredAt: r.timestamp,
-                    inputTokens: u.input_tokens,
-                    outputTokens: u.output_tokens,
-                    cachedInputTokens: u.cached_input_tokens,
-                    cacheWriteInputTokens: u.cache_write_input_tokens,
-                    reasoningOutputTokens: u.reasoning_output_tokens,
+                  const e = catalogMessage(this.agent, r, {
+                    model: ctx
+                      ? (this.db
+                          .prepare('SELECT model FROM contexts WHERE turn=?')
+                          .get(this.pluck(r, ctx.key) ?? '')?.model ?? 'unknown')
+                      : 'unknown',
                   });
+                  const result = insertEvent(this.db, e);
                   if (result === 'inserted') {
                     changed = true;
                     this.status.lastEvent = r.timestamp;
@@ -169,6 +162,14 @@ export class Collector {
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
+  }
+  pluck(record, path) {
+    let value = record;
+    for (const key of path.split('.')) {
+      if (value === null || typeof value !== 'object') return undefined;
+      value = value[key];
+    }
+    return value;
   }
   start() {
     if (this.root && !this.db.prepare("SELECT 1 FROM meta WHERE key='provenance_v2'").get()) {

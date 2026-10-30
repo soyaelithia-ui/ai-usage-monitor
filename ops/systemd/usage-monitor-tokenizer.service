@@ -9,8 +9,6 @@ WorkingDirectory=/opt/ai-usage-monitor
 Environment=USAGE_MONITOR_TOKENIZER_CACHE=/var/lib/ai-usage-monitor/tokenizer-cache
 Environment=USAGE_MONITOR_TOKENIZER_SOCKET=/var/lib/ai-usage-monitor/tokenizer.sock
 Environment=TIKTOKEN_CACHE_DIR=/var/lib/ai-usage-monitor/tokenizer-cache/tiktoken
-Environment=HF_HUB_OFFLINE=1
-Environment=TRANSFORMERS_OFFLINE=1
 Environment=PYTHONWARNINGS=ignore
 ExecStart=/var/lib/ai-usage-monitor/tokenizer-venv/bin/python worker/tokenizer.py
 Restart=on-failure

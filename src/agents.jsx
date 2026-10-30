@@ -1,17 +1,21 @@
 import React from 'react';
 
-export const knownAgents = [
-  { name: 'Codex', source: 'codex', tone: 'mint', symbol: 'C' },
-  { name: 'Antigravity', source: 'antigravity', tone: 'violet', symbol: 'A' },
-  { name: 'OpenCode', source: 'opencode', tone: 'blue', symbol: 'O' },
-  { name: 'Gemini CLI', source: 'gemini', tone: 'amber', symbol: 'G' },
-];
-export const agentList = (names) => [
-  ...knownAgents,
-  ...names
-    .filter((name) => !knownAgents.some((agent) => agent.name === name))
-    .map((name) => ({ name, source: null, tone: 'mint', symbol: name.slice(0, 1) })),
-];
+// Agent identity comes from the declarative catalogue served by /api/sources;
+// configured agents stay reachable with zero usage, and unknown names from
+// reported metrics still render with a neutral tone.
+export const agentList = (names, catalog = []) => {
+  const known = new Set(catalog.map((agent) => agent.name));
+  const declared = catalog.map((agent) => ({
+    name: agent.name,
+    source: agent.id,
+    tone: agent.tone,
+    symbol: agent.symbol,
+  }));
+  const extras = names
+    .filter((name) => !known.has(name))
+    .map((name) => ({ name, source: null, tone: 'mint', symbol: name.slice(0, 1) }));
+  return [...declared, ...extras];
+};
 export function sourceState(source) {
   if (!source) return { label: 'Métricas recibidas por ingesta', state: 'waiting' };
   return {
@@ -103,7 +107,7 @@ function Sparkline({ buckets = [] }) {
 }
 export function AgentSections({ agents, data, sources, onSelect, connected }) {
   return (
-    <section className="agent-sections" aria-labelledby="agent-sections-title">
+    <section className="agent-sections reveal" aria-labelledby="agent-sections-title">
       <div className="agent-section-heading">
         <div>
           <h2 id="agent-sections-title">Tus agentes, por separado</h2>
@@ -114,13 +118,14 @@ export function AgentSections({ agents, data, sources, onSelect, connected }) {
         </span>
       </div>
       <div className="agent-cards">
-        {agents.map((agent) => {
+        {agents.map((agent, index) => {
           const metrics = data.agentPanels?.find((panel) => panel.name === agent.name),
             status = sourceState(sources?.[agent.source]);
           return (
             <button
               className={`agent-card agent-${agent.tone}`}
               key={agent.name}
+              style={{ animationDelay: `${Math.min(index, 7) * 60}ms` }}
               onClick={() => onSelect(agent.name)}
               aria-label={`Abrir apartado de ${agent.name}`}
             >
@@ -179,7 +184,10 @@ export function AgentStatus({ agent, data, source, connected }) {
   const status = sourceState(source),
     metrics = data.agentPanels?.find((panel) => panel.name === agent.name);
   return (
-    <section className={`agent-status agent-${agent.tone}`} aria-label={`Estado de ${agent.name}`}>
+    <section
+      className={`agent-status agent-${agent.tone} reveal`}
+      aria-label={`Estado de ${agent.name}`}
+    >
       <AgentMark agent={agent} />
       <div>
         <strong>{agent.name}</strong>

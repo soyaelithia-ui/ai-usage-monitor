@@ -1,22 +1,15 @@
 import Decimal from 'decimal.js';
+import {
+  agents,
+  pricing,
+  longContext,
+  pricingSchedule,
+  pricingNote,
+  pricingRules,
+  providerNotes,
+} from './catalog.js';
 Decimal.set({ precision: 100 });
-export { Decimal };
-export const pricing = {
-  'gpt-6-astra': ['10', '1', '12.5', '25', '50'],
-  'gpt-6.1-sol': ['2', '.1', '2.5', '5', '10'],
-  'gpt-6.1-terra': ['1', '.05', '1.25', '2.5', '5'],
-  'gpt-6-luna': ['.1', '.01', '.125', '.25', '.5'],
-  'gpt-6-sol': ['2', '.2', '2.5', '5', '10'],
-};
-export const googlePricing = {
-  'gemini-2.5-pro': ['1.25', '.125', null, null, '10'],
-  'gemini-2.5-flash': ['.30', '.03', null, null, '2.50'],
-  'gemini-2.5-flash-lite': ['.10', '.01', null, null, '.40'],
-  'gemini-4-argon': ['2', '.10', null, null, '10'],
-  'gemini-3.8-flash': ['.75', '.075', null, null, '3.75'],
-};
-export const pricingNote =
-  'Equivalente API Standard, USD; nivel supuesto, no cargo real. El contexto se cuenta en cada llamada, incluso cuando se reutiliza. Tarifas consultadas el 29-10-2026; no representa la factura de ChatGPT/Codex. Caché escrita sin duración: se supone 30 min. Sin recargos regionales ni herramientas. OpenAI: contexto >272.000, entrada/caché ×2 y salida ×1,5. Google Pro 2.5: umbral 200.000; Flash con modalidad desconocida queda sin estimar. Google excluye almacenamiento y herramientas.';
+export { Decimal, pricingNote };
 export function integer(v, optional = false) {
   if (v === null || v === undefined) {
     if (optional) return null;
@@ -60,69 +53,45 @@ export function normalize(x) {
   e.totalTokens = (BigInt(e.inputTokens) + BigInt(e.outputTokens)).toString();
   return e;
 }
+const unestimated = (costNote) => ({
+  costUsd: null,
+  costInputUsd: null,
+  costCacheUsd: null,
+  costOutputUsd: null,
+  costNote,
+});
 export function estimate(e) {
-  let r =
-    e.provider === 'openai'
-      ? pricing[e.model]
-      : e.provider === 'google'
-        ? googlePricing[e.model]
-        : null;
-  if (e.provider === 'google' && r) {
-    r = [...r];
-    const date = Date.parse(e.occurredAt);
-    if (e.model === 'gemini-4-argon' && date >= Date.parse('2026-12-01T00:00:00Z'))
-      r = ['4', '.20', null, null, '20'];
-    if (e.model === 'gemini-3.8-flash' && date >= Date.parse('2027-01-01T00:00:00Z'))
-      r = ['1.50', '.15', null, null, '7.50'];
-    if (['gemini-2.5-flash', 'gemini-2.5-flash-lite'].includes(e.model) && e.modality !== 'text')
-      return {
-        costUsd: null,
-        costInputUsd: null,
-        costCacheUsd: null,
-        costOutputUsd: null,
-        costNote: 'Modalidad de entrada no verificada: la tarifa de audio difiere',
-      };
-    if (BigInt(e.cacheWriteInputTokens ?? 0) > 0n)
-      return {
-        costUsd: null,
-        costInputUsd: null,
-        costCacheUsd: null,
-        costOutputUsd: null,
-        costNote: 'Escritura/almacenamiento de caché de Google no verificable',
-      };
-  }
-  if (!r || e.cachedInputTokens === null || e.cacheWriteInputTokens === null)
-    return {
-      costUsd: null,
-      costInputUsd: null,
-      costCacheUsd: null,
-      costOutputUsd: null,
-      costNote: !r ? 'Tarifa no verificada' : 'Desglose de caché incompleto',
-    };
-  const long =
-      (e.provider === 'openai' && BigInt(e.inputTokens) > 272000n) ||
-      (e.provider === 'google' && e.model === 'gemini-2.5-pro' && BigInt(e.inputTokens) > 200000n),
+  let r = pricing[e.model];
+  if (!r || r.provider !== e.provider) return unestimated(pricingRules.unknownRate);
+  // Scheduled price changes; the latest entry whose date has passed wins.
+  for (const change of pricingSchedule[e.model] ?? [])
+    if (Date.parse(e.occurredAt) >= Date.parse(change.from)) r = { ...r, ...change };
+  if (e.cachedInputTokens === null || e.cacheWriteInputTokens === null)
+    return unestimated(pricingRules.incompleteCache);
+  if (r.modality && e.modality !== r.modality) return unestimated(pricingRules.modalityUnverified);
+  if (r.cacheWrite === undefined && BigInt(e.cacheWriteInputTokens) > 0n)
+    return unestimated(pricingRules.cacheWriteUnavailable);
+  const lc = longContext[e.model],
+    long = !!lc && BigInt(e.inputTokens) > BigInt(lc.threshold),
     d = (x) => new Decimal(x),
-    scale = long ? 2 : 1;
+    scale = long ? lc.input : 1;
+  const cacheWriteRate =
+    e.cacheWriteDuration === '12h' ? (r.cacheWrite12h ?? r.cacheWrite) : r.cacheWrite;
+  const cacheRead = d(e.cachedInputTokens).times(r.cached).times(scale).div(1e6);
+  const cacheWrite = d(e.cacheWriteInputTokens)
+    .times(cacheWriteRate ?? 0)
+    .times(scale)
+    .div(1e6);
+  const cache = cacheRead.plus(cacheWrite);
   const normal = d(e.inputTokens)
     .minus(e.cachedInputTokens)
     .minus(e.cacheWriteInputTokens)
-    .times(r[0])
-    .times(scale)
-    .div(1e6);
-  const cacheRead = d(e.cachedInputTokens).times(r[1]).times(scale).div(1e6);
-  const cacheWrite = d(e.cacheWriteInputTokens)
-    .times(r[e.cacheWriteDuration === '12h' ? 3 : 2] ?? 0)
-    .times(scale)
-    .div(1e6);
-  const cache = d(e.cachedInputTokens)
-    .times(r[1])
-    .plus(d(e.cacheWriteInputTokens).times(r[e.cacheWriteDuration === '12h' ? 3 : 2] ?? 0))
+    .times(r.input)
     .times(scale)
     .div(1e6);
   const output = d(e.outputTokens)
-    .times(r[4])
-    .times(long ? '1.5' : 1)
+    .times(r.output)
+    .times(long ? lc.output : 1)
     .div(1e6);
   return {
     costCacheReadUsd: cacheRead.toFixed(),
@@ -131,8 +100,8 @@ export function estimate(e) {
       e.reasoningOutputTokens === null
         ? null
         : d(e.reasoningOutputTokens)
-            .times(r[4])
-            .times(long ? '1.5' : 1)
+            .times(r.output)
+            .times(long ? lc.output : 1)
             .div(1e6)
             .toFixed(),
     costVisibleOutputUsd:
@@ -140,8 +109,8 @@ export function estimate(e) {
         ? null
         : d(e.outputTokens)
             .minus(e.reasoningOutputTokens)
-            .times(r[4])
-            .times(long ? '1.5' : 1)
+            .times(r.output)
+            .times(long ? lc.output : 1)
             .div(1e6)
             .toFixed(),
     costUsd: normal.plus(cache).plus(output).toFixed(),
@@ -149,13 +118,14 @@ export function estimate(e) {
     costCacheUsd: cache.toFixed(),
     costOutputUsd: output.toFixed(),
     costNote:
-      e.provider === 'google'
-        ? 'API Standard supuesta; no incluye almacenamiento de caché, herramientas ni suscripción'
+      r.cacheWrite === undefined && providerNotes[r.provider]
+        ? providerNotes[r.provider]
         : BigInt(e.cacheWriteInputTokens) > 0n && !e.cacheWriteDuration
-          ? 'Escritura de caché: 30 min supuestos'
-          : 'API Standard estimada',
+          ? pricingRules.cacheWriteAssumed
+          : pricingRules.assumedStandard,
   };
 }
+const selfReported = agents.filter((a) => a.reader === 'contract');
 export function antigravity(record) {
   if (
     record?.schema !== 'usage-monitor.usage.v1' ||
@@ -164,5 +134,6 @@ export function antigravity(record) {
     !record.provider
   )
     throw Error('antigravity_unverified_schema');
-  return normalize({ ...record, source: 'antigravity', agent: 'Antigravity' });
+  const agent = selfReported[0];
+  return normalize({ ...record, source: agent.id, agent: agent.name });
 }

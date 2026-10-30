@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
 import { hash, exchange, filters, events, analytics, insertEvent } from './db.js';
 import { antigravity } from './usage.js';
+import { agents } from './catalog.js';
 import { reconcile } from './provenance.js';
 export const cookieName = '__Host-usage-monitor';
 export const equal = (a, b) =>
@@ -29,6 +30,7 @@ export function createApp({
   gatewayKey,
   ingestKey,
   collector,
+  collectors,
   sources,
   tokenizer,
   dist = resolve('dist'),
@@ -38,6 +40,10 @@ export function createApp({
   app.disable('x-powered-by');
   app.set('trust proxy', false);
   app.use(security);
+  // One JSONL collector per catalogue agent; tests may pass a single one.
+  const readerList = collectors ?? (collector ? [collector] : []);
+  const readerStatus = () =>
+    Object.fromEntries(readerList.map((c) => [c.agent?.id ?? 'codex', c.status ?? c]));
   const streams = new Set();
   let revision = 0;
   const broadcast = () => {
@@ -178,7 +184,7 @@ export function createApp({
         activation: new Date(
           Number(db.prepare("SELECT value FROM meta WHERE key='activation'").get().value),
         ).toISOString(),
-        collector: collector.status,
+        collector: collectors ? readerStatus() : (collector?.status ?? { state: 'not_configured' }),
         errors: db.prepare('SELECT kind,at FROM errors ORDER BY at DESC LIMIT 20').all(),
         errorCount: db.prepare('SELECT COUNT(*) n FROM errors').get().n,
       });
@@ -188,9 +194,16 @@ export function createApp({
   });
   app.get('/api/sources', (_req, res) =>
     res.json({
-      codex: collector.status,
+      ...readerStatus(),
       ...sources?.status,
       tokenizer: tokenizer?.status ?? { state: 'not_configured' },
+      agents: agents.map(({ id, name, tone, symbol, reader }) => ({
+        id,
+        name,
+        tone,
+        symbol,
+        reader,
+      })),
     }),
   );
   app.get('/api/reconciliation', (req, res) => {
