@@ -12,43 +12,19 @@ const dir = mkdtempSync(join(tmpdir(), 'usage-monitor-browser-')),
   logs = join(dir, 'logs');
 mkdirSync(logs);
 const db = openDb(join(dir, 'test.sqlite'));
-const isPortFree = (port) =>
-  new Promise((resolve) => {
-    const s = createServer();
-    s.once('error', () => resolve(false));
-    s.once('listening', () => s.close(() => resolve(true)));
-    s.listen(port, '127.0.0.1');
-  });
 const collector = new Collector(db, logs);
 let c = {
   db,
-  origin: 'http://localhost:0',
+  origin: 'http://localhost:4180',
   gatewayKey: 'test-gateway',
   ingestKey: 'test-ingest',
   collector,
   dist: process.env.USAGE_MONITOR_TEST_DIST,
 };
-// Find free test-only ports allowing Origin and cookie validation over a trustworthy localhost origin.
-let backendPort = Number(process.env.TEST_BACKEND_PORT || 0);
-let gatewayPort = Number(process.env.TEST_GATEWAY_PORT || 0);
-if (!backendPort || !gatewayPort) {
-  for (const [bp, gp] of [
-    [4181, 4180],
-    [4281, 4280],
-    [4381, 4380],
-    [4481, 4480],
-    [4581, 4580],
-  ]) {
-    if ((await isPortFree(bp)) && (await isPortFree(gp))) {
-      backendPort = bp;
-      gatewayPort = gp;
-      break;
-    }
-  }
-}
-c.origin = `http://localhost:${gatewayPort}`;
-c.backendPort = backendPort;
-c.gatewayPort = gatewayPort;
+// Fixed test-only ports allow Origin and cookie validation over a trustworthy localhost origin.
+c.origin = 'http://localhost:4180';
+c.backendPort = 4181;
+c.gatewayPort = 4180;
 const api = createApp(c);
 collector.onChange = api.broadcast;
 const backend = api.app.listen(c.backendPort, '127.0.0.1');
@@ -61,7 +37,8 @@ collector.start();
 const browser = await chromium.launch({
   executablePath: process.env.CHROMIUM_PATH || undefined,
   headless: true,
-  chromiumSandbox: process.env.CHROMIUM_NO_SANDBOX !== '1',
+  args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  chromiumSandbox: process.env.CHROMIUM_NO_SANDBOX === '0',
 });
 const report = {};
 try {
