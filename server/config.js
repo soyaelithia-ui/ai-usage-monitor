@@ -4,6 +4,7 @@ import { join, resolve, dirname } from 'node:path';
 export function configPath() {
   return (
     process.env.USAGE_MONITOR_CONFIG ??
+    process.env.PULSE_CONFIG ??
     join(
       process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'),
       'ai-usage-monitor',

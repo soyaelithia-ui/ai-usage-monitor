@@ -32,8 +32,11 @@ def cache_root():
     return Path(
         os.environ.get(
             'USAGE_MONITOR_TOKENIZER_CACHE',
-            os.path.join(
-                os.path.expanduser('~'), '.local', 'share', 'ai-usage-monitor', 'tokenizer-cache'
+            os.environ.get(
+                'PULSE_TOKENIZER_CACHE',
+                os.path.join(
+                    os.path.expanduser('~'), '.local', 'share', 'ai-usage-monitor', 'tokenizer-cache'
+                ),
             ),
         )
     )
@@ -255,6 +258,9 @@ if __name__ == '__main__':
         serve(
             os.environ.get(
                 'USAGE_MONITOR_TOKENIZER_SOCKET',
-                '/var/lib/ai-usage-monitor/tokenizer.sock',
+                os.environ.get(
+                    'PULSE_TOKENIZER_SOCKET',
+                    '/var/lib/ai-usage-monitor/tokenizer.sock',
+                ),
             )
         )
