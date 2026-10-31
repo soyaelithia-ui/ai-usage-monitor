@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb, insertEvent, analytics, filters } from '../server/db.js';
+import request from 'supertest';
+import { openDb, insertEvent, analytics, filters, getDynamicAgents } from '../server/db.js';
+import { createApp } from '../server/app.js';
 const epoch = Date.parse('2026-10-29T18:00:00Z');
 const row = (id, agent, changes = {}) => ({
   responseId: String(id),
@@ -76,4 +78,61 @@ test('agent panels obey model/provider/session filters and count new calls once'
     'Antigravity',
   );
   db.close();
+});
+test('dynamic agents register via API and auto-register via contract ingestion', async () => {
+  const db = openDb(':memory:');
+  const { app, close } = createApp({
+    db,
+    origin: 'https://usage.test',
+    gatewayKey: 'gw-key',
+    ingestKey: 'ingest-secret',
+    dist: process.cwd() + '/public',
+  });
+  try {
+    const regRes = await request(app)
+      .post('/api/agents/register')
+      .set('authorization', 'Bearer ingest-secret')
+      .send({
+        id: 'swarm-agent',
+        name: 'Swarm Agent',
+        reader: 'contract',
+        provider: 'custom',
+        tone: 'amber',
+        symbol: 'S',
+      });
+    assert.equal(regRes.status, 200);
+    assert.equal(regRes.body.ok, true);
+
+    const dynamicAgents = getDynamicAgents(db);
+    assert.equal(
+      dynamicAgents.some((a) => a.id === 'swarm-agent'),
+      true,
+    );
+
+    const ingestRes = await request(app)
+      .post('/api/ingest')
+      .set('authorization', 'Bearer ingest-secret')
+      .send({
+        source: 'autonomous-coder',
+        agent: 'Autonomous Coder',
+        schema: 'usage-monitor.usage.v1',
+        semantics: 'input_includes_cache;output_includes_reasoning',
+        provider: 'deepseek',
+        model: 'deepseek-4.1-coder',
+        id: 'resp-123',
+        occurredAt: new Date().toISOString(),
+        inputTokens: 1000,
+        outputTokens: 250,
+      });
+    assert.equal(ingestRes.status, 200);
+
+    const updatedDynamic = getDynamicAgents(db);
+    assert.equal(
+      updatedDynamic.some((a) => a.id === 'autonomous-coder'),
+      true,
+    );
+  } finally {
+    close();
+    db.close();
+  }
 });

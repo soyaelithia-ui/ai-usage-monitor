@@ -105,7 +105,19 @@ function Sparkline({ buckets = [] }) {
     </svg>
   );
 }
-export function AgentSections({ agents, data, sources, onSelect, connected }) {
+export function AgentSections({ agents, data, sources, onSelect, connected, selected }) {
+  const visibleAgents = agents.filter((agent) => {
+    const metrics = data.agentPanels?.find((panel) => panel.name === agent.name);
+    const hasActivity =
+      Boolean(metrics) &&
+      (Number(metrics.count || 0) > 0 ||
+        Number(metrics.totalTokens || 0) > 0 ||
+        Number(metrics.inputTokens || 0) > 0 ||
+        Number(metrics.outputTokens || 0) > 0);
+    const isSelected = Boolean(selected && selected === agent.name);
+    return hasActivity || isSelected;
+  });
+
   return (
     <section className="agent-sections reveal" aria-labelledby="agent-sections-title">
       <div className="agent-section-heading">
@@ -118,64 +130,83 @@ export function AgentSections({ agents, data, sources, onSelect, connected }) {
         </span>
       </div>
       <div className="agent-cards">
-        {agents.map((agent, index) => {
-          const metrics = data.agentPanels?.find((panel) => panel.name === agent.name),
-            status = sourceState(sources?.[agent.source]);
-          return (
-            <button
-              className={`agent-card agent-${agent.tone}`}
-              key={agent.name}
-              style={{ animationDelay: `${Math.min(index, 7) * 60}ms` }}
-              onClick={() => onSelect(agent.name)}
-              aria-label={`Abrir apartado de ${agent.name}`}
-            >
-              <span className="agent-card-heading">
-                <AgentMark agent={agent} />
-                <strong>{agent.name}</strong>
-                <span className="agent-open" aria-hidden="true">
-                  ↗
+        {visibleAgents.length === 0 ? (
+          <div
+            className="agent-empty-notice"
+            style={{
+              gridColumn: '1 / -1',
+              padding: '24px 16px',
+              textAlign: 'center',
+              color: '#889890',
+              background: 'rgba(255, 255, 255, 0.02)',
+              borderRadius: '12px',
+              border: '1px dashed #2a3831',
+            }}
+          >
+            <p style={{ margin: 0, fontSize: '0.92rem' }}>
+              No hay agentes con actividad registrada en esta ventana de tiempo.
+            </p>
+          </div>
+        ) : (
+          visibleAgents.map((agent, index) => {
+            const metrics = data.agentPanels?.find((panel) => panel.name === agent.name),
+              status = sourceState(sources?.[agent.source]);
+            return (
+              <button
+                className={`agent-card agent-${agent.tone}`}
+                key={agent.name}
+                style={{ animationDelay: `${Math.min(index, 7) * 60}ms` }}
+                onClick={() => onSelect(agent.name)}
+                aria-label={`Abrir apartado de ${agent.name}`}
+              >
+                <span className="agent-card-heading">
+                  <AgentMark agent={agent} />
+                  <strong>{agent.name}</strong>
+                  <span className="agent-open" aria-hidden="true">
+                    ↗
+                  </span>
                 </span>
-              </span>
-              <span className={`agent-source-state state-${status.state}`}>
-                <i />
-                {status.label}
-              </span>
-              <span className="agent-card-metrics">
-                <span>
-                  <small>Tokens</small>
-                  <strong title={exact(metrics?.totalTokens)}>
-                    {compact(metrics?.totalTokens)}
-                  </strong>
+                <span className={`agent-source-state state-${status.state}`}>
+                  <i />
+                  {status.label}
                 </span>
-                <span>
-                  <small>Respuestas</small>
-                  <strong>{metrics?.count ?? 0}</strong>
+                <span className="agent-card-metrics">
+                  <span>
+                    <small>Tokens</small>
+                    <strong title={exact(metrics?.totalTokens)}>
+                      {compact(metrics?.totalTokens)}
+                    </strong>
+                  </span>
+                  <span>
+                    <small>Respuestas</small>
+                    <strong>{metrics?.count ?? 0}</strong>
+                  </span>
+                  <span>
+                    <small>Equivalente API</small>
+                    <strong>
+                      {!metrics?.count
+                        ? '—'
+                        : metrics.count === metrics.unpriced
+                          ? 'Sin estimar'
+                          : money(metrics.costUsd)}
+                    </strong>
+                  </span>
                 </span>
-                <span>
-                  <small>Equivalente API</small>
-                  <strong>
-                    {!metrics?.count
-                      ? '—'
-                      : metrics.count === metrics.unpriced
-                        ? 'Sin estimar'
-                        : money(metrics.costUsd)}
-                  </strong>
+                <Sparkline buckets={metrics?.buckets} />
+                <span className="agent-card-tokens">
+                  <span>↓ {exact(metrics?.inputTokens)} entrada</span>
+                  <span>↑ {exact(metrics?.outputTokens)} salida</span>
                 </span>
-              </span>
-              <Sparkline buckets={metrics?.buckets} />
-              <span className="agent-card-tokens">
-                <span>↓ {exact(metrics?.inputTokens)} entrada</span>
-                <span>↑ {exact(metrics?.outputTokens)} salida</span>
-              </span>
-              <span className="agent-card-foot">
-                {metrics?.lastEventAt
-                  ? `Última respuesta: ${date(metrics.lastEventAt)}`
-                  : 'Sin consumo registrado en esta ventana'}
-                <span aria-hidden="true">→</span>
-              </span>
-            </button>
-          );
-        })}
+                <span className="agent-card-foot">
+                  {metrics?.lastEventAt
+                    ? `Última respuesta: ${date(metrics.lastEventAt)}`
+                    : 'Sin consumo registrado en esta ventana'}
+                  <span aria-hidden="true">→</span>
+                </span>
+              </button>
+            );
+          })
+        )}
       </div>
     </section>
   );
@@ -209,6 +240,116 @@ export function AgentStatus({ agent, data, source, connected }) {
             ? `Fuente revisada: ${date(source.lastScan)}`
             : 'Se mostrarán métricas al recibir registros verificables'}
         </small>
+      </div>
+    </section>
+  );
+}
+export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
+  const buckets = metrics?.buckets || [];
+  const latestBucket = buckets.length ? buckets[buckets.length - 1] : null;
+  const currentTokens = latestBucket
+    ? BigInt(latestBucket.inputTokens) + BigInt(latestBucket.outputTokens)
+    : 0n;
+  const speed = currentTokens > 0n ? Math.round(Number(currentTokens) / 60) : 0;
+  const totalTurns = metrics?.count || 0;
+  const cadence = totalTurns > 0 ? (totalTurns >= 5 ? '< 3s' : '~12s') : 'En espera';
+  const status = sourceState(source);
+  const isStreaming = connected && status.state === 'running';
+
+  return (
+    <section className={`live-telemetry agent-${agent?.tone || 'mint'} reveal`}>
+      <div className="telemetry-header">
+        <div className="telemetry-title">
+          <div className={`telemetry-heartbeat ${isStreaming ? 'beating' : ''}`}>
+            <svg viewBox="0 0 40 24" className="ecg-line" aria-hidden="true">
+              <path d="M 0 12 L 10 12 L 14 3 L 18 21 L 22 9 L 26 15 L 30 12 L 40 12" />
+            </svg>
+            <span className="live-dot" />
+          </div>
+          <div>
+            <h3>Telemetría en Tiempo Real</h3>
+            <span className="telemetry-sub">
+              {isStreaming ? 'Monitoreo activo de turnos y velocidad' : status.label}
+            </span>
+          </div>
+        </div>
+        <div className="telemetry-badges">
+          <span className={`status-pill state-${status.state}`}>
+            <i /> {status.label}
+          </span>
+          <span className="cadence-pill">
+            ⏱ Cadencia: <strong>{cadence}</strong>
+          </span>
+        </div>
+      </div>
+      <div className="telemetry-grid">
+        <div className="telemetry-kpi">
+          <span className="kpi-label">Velocidad</span>
+          <div className="kpi-value-row">
+            <strong className="kpi-num animate-num">{speed.toLocaleString('es-ES')}</strong>
+            <small className="kpi-unit">tokens / s</small>
+          </div>
+          <span className="kpi-hint">Ritmo estimado en la ventana activa</span>
+        </div>
+        <div className="telemetry-kpi">
+          <span className="kpi-label">Entrada & Caché</span>
+          <div className="kpi-value-row">
+            <strong className="kpi-num mint-text">{compact(metrics?.inputTokens)}</strong>
+            <small className="kpi-subnum">⚡ {compact(metrics?.cachedInputTokens)} en caché</small>
+          </div>
+          <div className="mini-progress-bar">
+            <div
+              className="bar-fill mint-fill"
+              style={{
+                width: `${Math.min(
+                  100,
+                  (Number(metrics?.cachedInputTokens || 0) /
+                    Math.max(1, Number(metrics?.inputTokens || 1))) *
+                    100,
+                )}%`,
+              }}
+            />
+          </div>
+        </div>
+        <div className="telemetry-kpi">
+          <span className="kpi-label">Salida & Razonamiento</span>
+          <div className="kpi-value-row">
+            <strong className="kpi-num violet-text">{compact(metrics?.outputTokens)}</strong>
+            <small className="kpi-subnum">
+              🧠 {compact(metrics?.reasoningOutputTokens)} razonamiento
+            </small>
+          </div>
+          <div className="mini-progress-bar">
+            <div
+              className="bar-fill violet-fill"
+              style={{
+                width: `${Math.min(
+                  100,
+                  (Number(metrics?.reasoningOutputTokens || 0) /
+                    Math.max(1, Number(metrics?.outputTokens || 1))) *
+                    100,
+                )}%`,
+              }}
+            />
+          </div>
+        </div>
+        <div className="telemetry-kpi">
+          <span className="kpi-label">Respuestas & Coste Est.</span>
+          <div className="kpi-value-row">
+            <strong className="kpi-num">{metrics?.count ?? 0}</strong>
+            <small className="kpi-subnum">
+              {metrics?.costUsd ? money(metrics.costUsd) : 'Sin estimar'}
+            </small>
+          </div>
+          <span className="kpi-hint">
+            {metrics?.lastEventAt
+              ? `Última: ${date(metrics.lastEventAt)}`
+              : 'Sin actividad en este periodo'}
+          </span>
+        </div>
+      </div>
+      <div className="telemetry-stream-sparkline">
+        <Sparkline buckets={buckets} />
       </div>
     </section>
   );

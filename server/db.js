@@ -25,7 +25,9 @@ export function openDb(path, now = Date.now()) {
     CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY,expires INTEGER NOT NULL,csrf TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS native_observations(identity TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,observed_at TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS text_measurements(identity TEXT PRIMARY KEY,occurred_at INTEGER NOT NULL,data TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS attempts(key TEXT PRIMARY KEY,count INTEGER NOT NULL,until INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS attempts(key TEXT PRIMARY KEY,count INTEGER NOT NULL,until INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS dynamic_agents(id TEXT PRIMARY KEY,name TEXT NOT NULL,reader TEXT NOT NULL,provider TEXT,tone TEXT,symbol TEXT,config_json TEXT,created_at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS dynamic_pricing(model TEXT PRIMARY KEY,provider TEXT,input TEXT NOT NULL,cached TEXT NOT NULL,output TEXT NOT NULL,cache_write TEXT,cache_write_12h TEXT);`);
   db.prepare('INSERT OR IGNORE INTO meta VALUES (?,?)').run('activation', String(now));
   return db;
 }
@@ -323,4 +325,83 @@ export function analytics(db, f) {
     ),
     pricingNote,
   };
+}
+export function insertDynamicAgent(db, agent) {
+  db.prepare(
+    `
+    INSERT INTO dynamic_agents(id, name, reader, provider, tone, symbol, config_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name=excluded.name,
+      reader=excluded.reader,
+      provider=excluded.provider,
+      tone=coalesce(excluded.tone, dynamic_agents.tone),
+      symbol=coalesce(excluded.symbol, dynamic_agents.symbol),
+      config_json=coalesce(excluded.config_json, dynamic_agents.config_json)
+  `,
+  ).run(
+    agent.id,
+    agent.name,
+    agent.reader,
+    agent.provider ?? null,
+    agent.tone ?? null,
+    agent.symbol ?? null,
+    agent.config ? JSON.stringify(agent.config) : (agent.config_json ?? null),
+    agent.created_at ?? Date.now(),
+  );
+}
+export function getDynamicAgents(db) {
+  try {
+    return db
+      .prepare('SELECT * FROM dynamic_agents ORDER BY created_at ASC')
+      .all()
+      .map((a) => ({
+        ...a,
+        config: a.config_json ? JSON.parse(a.config_json) : undefined,
+      }));
+  } catch {
+    return [];
+  }
+}
+export function setDynamicPricing(db, p) {
+  db.prepare(
+    `
+    INSERT INTO dynamic_pricing(model, provider, input, cached, output, cache_write, cache_write_12h)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(model) DO UPDATE SET
+      provider=excluded.provider,
+      input=excluded.input,
+      cached=excluded.cached,
+      output=excluded.output,
+      cache_write=excluded.cache_write,
+      cache_write_12h=excluded.cache_write_12h
+  `,
+  ).run(
+    p.model,
+    p.provider ?? null,
+    p.input,
+    p.cached,
+    p.output,
+    p.cache_write ?? null,
+    p.cache_write_12h ?? null,
+  );
+}
+export function getDynamicPricing(db) {
+  try {
+    const rows = db.prepare('SELECT * FROM dynamic_pricing').all();
+    const map = {};
+    for (const r of rows) {
+      map[r.model] = {
+        provider: r.provider,
+        input: r.input,
+        cached: r.cached,
+        output: r.output,
+        cacheWrite: r.cache_write,
+        cacheWrite12h: r.cache_write_12h,
+      };
+    }
+    return map;
+  } catch {
+    return {};
+  }
 }

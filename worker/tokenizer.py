@@ -152,7 +152,11 @@ def count(request):
             n = len(engine[1].encode(text, disallowed_special=()))
             name, vocabulary = 'tiktoken', encoding
         else:
-            key, entry = match_vocabulary(model.lower())
+            custom_key = request.get('vocabulary')
+            if custom_key and custom_key in CATALOGUE:
+                key, entry = custom_key, CATALOGUE[custom_key]
+            else:
+                key, entry = match_vocabulary(model.lower())
             if not entry:
                 return {'status': 'unsupported_model'}
             engine_kind, engine = load_engine(key, entry)

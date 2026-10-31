@@ -126,14 +126,19 @@ export function estimate(e) {
   };
 }
 const selfReported = agents.filter((a) => a.reader === 'contract');
-export function antigravity(record) {
+export function contractMessage(record, agentDef) {
   if (
     record?.schema !== 'usage-monitor.usage.v1' ||
     record?.semantics !== 'input_includes_cache;output_includes_reasoning' ||
     !record.model ||
     !record.provider
   )
-    throw Error('antigravity_unverified_schema');
-  const agent = selfReported[0];
-  return normalize({ ...record, source: agent.id, agent: agent.name });
+    throw Error(`${agentDef?.id ?? 'contract'}_unverified_schema`);
+  const agentId = agentDef?.id ?? record.source ?? 'custom';
+  const agentName =
+    agentDef?.name ?? record.agent ?? agentId.slice(0, 1).toUpperCase() + agentId.slice(1);
+  return normalize({ ...record, source: agentId, agent: agentName });
+}
+export function antigravity(record) {
+  return contractMessage(record, selfReported[0]);
 }

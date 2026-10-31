@@ -1,7 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './style.css';
-import { agentList, AgentNavigation, AgentSections, AgentStatus } from './agents.jsx';
+import {
+  agentList,
+  AgentNavigation,
+  AgentSections,
+  AgentStatus,
+  LiveTelemetry,
+} from './agents.jsx';
 const exact = (x) => (x == null ? 'No disponible' : BigInt(x).toLocaleString('es-ES'));
 const compact = (x) => {
   const n = Number(x);
@@ -28,6 +34,8 @@ function Icon({ type = 'activity' }) {
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
       aria-hidden="true"
     >
       {type === 'activity' ? (
@@ -38,6 +46,40 @@ function Icon({ type = 'activity' }) {
           <rect x="14" y="3" width="7" height="7" rx="1" />
           <rect x="3" y="14" width="7" height="7" rx="1" />
           <rect x="14" y="14" width="7" height="7" rx="1" />
+        </>
+      ) : type === 'sidebar' ? (
+        <>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M9 3v18" />
+        </>
+      ) : type === 'sidebar-collapse' ? (
+        <>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M9 3v18" />
+          <path d="M15 9l-3 3 3 3" />
+        </>
+      ) : type === 'sidebar-expand' ? (
+        <>
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <path d="M9 3v18" />
+          <path d="M13 9l3 3-3 3" />
+        </>
+      ) : type === 'menu' ? (
+        <>
+          <line x1="3" y1="6" x2="21" y2="6" strokeWidth="2" />
+          <line x1="3" y1="12" x2="21" y2="12" strokeWidth="2" />
+          <line x1="3" y1="18" x2="21" y2="18" strokeWidth="2" />
+        </>
+      ) : type === 'close' ? (
+        <>
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </>
+      ) : type === 'sources' ? (
+        <>
+          <path d="M12 2L2 7l10 5 10-5-10-5z" />
+          <path d="M2 17l10 5 10-5" />
+          <path d="M2 12l10 5 10-5" />
         </>
       ) : (
         <>
@@ -331,6 +373,13 @@ function Breakdown({ data }) {
   );
 }
 function SourcesPanel({ sources, reconciliation, agent }) {
+  const [technologies, setTechnologies] = useState([]);
+  useEffect(() => {
+    fetch('/api/discovery')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => d && setTechnologies(d.technologies || []))
+      .catch(() => {});
+  }, []);
   const sourceLabels = Object.fromEntries(
     (sources?.agents ?? fallbackSources).map((a) => [a.id, a.name]),
   );
@@ -339,7 +388,7 @@ function SourcesPanel({ sources, reconciliation, agent }) {
       <div className="panel-heading">
         <div>
           <h2 id="sources-title">Fuentes y precisión</h2>
-          <p>Lectura pasiva · no modifica los agentes ni sus registros</p>
+          <p>Detección inteligente y lectura pasiva sin alterar los agentes</p>
         </div>
       </div>
       <div className="source-grid">
@@ -353,6 +402,22 @@ function SourcesPanel({ sources, reconciliation, agent }) {
             </div>
           ))}
       </div>
+      {technologies.length > 0 && (
+        <div className="source-detail" style={{ marginTop: '16px' }}>
+          <h3 style={{ fontSize: '13px', color: '#c4d7ec', marginBottom: '8px' }}>
+            Tecnologías y Agentes Detectados en el Entorno Local
+          </h3>
+          <div className="source-grid">
+            {technologies.map((t) => (
+              <div key={t.id}>
+                <strong>{t.name}</strong>
+                <span>{t.detected ? '✓ Detectado en el sistema' : 'No instalado / sin ruta'}</span>
+                <small>{t.path ? t.path : `Lector: ${t.reader}`}</small>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="source-detail">
         <p>
           Tokenizadores locales:{' '}
@@ -362,9 +427,9 @@ function SourcesPanel({ sources, reconciliation, agent }) {
           {sources?.tokenizer?.versions?.sentencepiece ?? '—'}.
         </p>
         <p>
-          Los modelos sin contador nativo se estiman con vocabularios locales verificados (Qwen,
-          DeepSeek, GLM, Kimi, Baichuan, Yi, MiniCPM, Llama, Mistral). Las estimaciones de texto
-          visible se mantienen fuera de los totales y del coste.
+          Los modelos sin contador nativo se estiman con vocabularios locales verificados. Los
+          agentes pueden incorporar sus propios tokenizadores dinámicamente mediante la API o
+          contrato de ingesta.
         </p>
         <details>
           <summary>Vocabularios locales instalados</summary>
@@ -372,6 +437,15 @@ function SourcesPanel({ sources, reconciliation, agent }) {
             {(sources?.tokenizer?.vocabularies ?? [])
               .map((v) => `${v.id}${v.installed ? '' : ' (sin instalar)'}`)
               .join(' · ') || 'Sin información'}
+          </p>
+        </details>
+        <details>
+          <summary>Auto-incorporación de nuevos agentes (API & Contrato)</summary>
+          <p>
+            Un nuevo agente puede auto-registrarse enviando una petición{' '}
+            <code>POST /api/agents/register</code> con su identificador, nombre y lector, o
+            simplemente enviando métricas a <code>POST /api/ingest</code> con el esquema de contrato
+            estándar.
           </p>
         </details>
         {reconciliation && (
@@ -414,6 +488,239 @@ function SourcesPanel({ sources, reconciliation, agent }) {
     </section>
   );
 }
+function HistoryPanel({ history, agent, offset, setOffset }) {
+  const [expanded, setExpanded] = useState(false);
+  const [viewMode, setViewMode] = useState('grouped');
+  const [collapsedGroups, setCollapsedGroups] = useState({});
+
+  const allEvents = history?.events || [];
+  const displayedEvents = expanded ? allEvents : allEvents.slice(0, 6);
+
+  // Group displayed events by agent and model
+  const groups = [];
+  const groupMap = new Map();
+  for (const e of displayedEvents) {
+    const key = `${e.agent}:::${e.model}`;
+    if (!groupMap.has(key)) {
+      const g = {
+        key,
+        agent: e.agent,
+        model: e.model,
+        events: [],
+        latestOccurredAt: e.occurredAt,
+      };
+      groupMap.set(key, g);
+      groups.push(g);
+    }
+    groupMap.get(key).events.push(e);
+  }
+
+  const toggleGroup = (key) => {
+    setCollapsedGroups((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
+  const renderEventRow = (e) => (
+    <tr key={e.id} className="history-event-row">
+      <td>
+        <time dateTime={e.occurredAt} title={fulltime(e.occurredAt)}>
+          {fulltime(e.occurredAt)}
+        </time>
+      </td>
+      <td>
+        <span className="agent-badge">{e.agent}</span>
+        <small>{e.model}</small>
+      </td>
+      <td>{exact(e.inputTokens)}</td>
+      <td>{exact(e.outputTokens)}</td>
+      <td title={e.costUsd ? `USD ${e.costUsd}` : e.costNote}>{money(e.costUsd)}</td>
+      <td>
+        <details>
+          <summary aria-label={`Detalles de respuesta ${e.id}`}>Ver</summary>
+          <div className="event-detail">
+            Caché leída: {exact(e.cachedInputTokens)}
+            <br />
+            Caché escrita: {exact(e.cacheWriteInputTokens)}
+            <br />
+            Razonamiento: {exact(e.reasoningOutputTokens)}
+            <br />
+            USD entrada: {e.costInputUsd ?? '—'}
+            <br />
+            USD caché leída / escrita: {e.costCacheReadUsd ?? '—'} / {e.costCacheWriteUsd ?? '—'}
+            <br />
+            USD salida visible / razonamiento: {e.costVisibleOutputUsd ?? '—'} /{' '}
+            {e.costReasoningUsd ?? '—'}
+            <br />
+            {e.costNote}
+            <br />
+            {e.source} · {e.provider}
+            <br />
+            Método: {e.method === 'native' ? 'contador nativo' : 'declarado'}
+            <br />
+            Sesión: {e.sessionId ?? 'desconocida'}
+            <br />
+            Turno: {e.turnId ?? 'desconocido'}
+            <br />
+            Formato: {e.sourceVersion ?? 'sin verificar'}
+            <br />
+            Cobertura:{' '}
+            {e.coverage === 'agent_normalized_usage_zero_defaults_possible'
+              ? 'Contador del agente; algunos ceros pueden ser valores por defecto'
+              : e.coverage === 'provider_response_usage'
+                ? 'Uso nativo por respuesta'
+                : (e.coverage ?? 'desconocida')}
+            <br />
+            Tarifas: {e.pricingVersion ?? 'registro anterior'} · Standard supuesto
+            <br />
+            <span className="response-id">{e.responseId}</span>
+          </div>
+        </details>
+      </td>
+    </tr>
+  );
+
+  return (
+    <section className="panel history reveal">
+      <div className="panel-heading">
+        <div>
+          <h2>
+            {agent ? `Actividad de ${agent}` : 'Actividad reciente'}{' '}
+            <span className="count">{history?.total ?? 0}</span>
+          </h2>
+          <p>
+            {expanded
+              ? 'Historial completo de solicitudes en este periodo'
+              : 'Vista compacta · mostrando las 6 solicitudes más recientes'}
+          </p>
+        </div>
+        <div className="history-heading-controls">
+          <div className="history-view-pills" role="radiogroup" aria-label="Modo de agrupación">
+            <button
+              type="button"
+              className={viewMode === 'grouped' ? 'active' : ''}
+              onClick={() => setViewMode('grouped')}
+              title="Agrupar por Agente y modelo"
+            >
+              Agrupado
+            </button>
+            <button
+              type="button"
+              className={viewMode === 'flat' ? 'active' : ''}
+              onClick={() => setViewMode('flat')}
+              title="Lista cronológica plana"
+            >
+              Cronológico
+            </button>
+          </div>
+          <span className="subtle">
+            {history
+              ? `${Math.min(offset + 1, history.total)}–${Math.min(offset + 50, history.total)}`
+              : ''}
+          </span>
+        </div>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Momento</th>
+              <th>Agente / modelo</th>
+              <th>Entrada</th>
+              <th>Salida</th>
+              <th>Equivalente API</th>
+              <th>Detalle</th>
+            </tr>
+          </thead>
+          <tbody>
+            {viewMode === 'grouped'
+              ? groups.map((g) => (
+                  <React.Fragment key={`group-block-${g.key}`}>
+                    <tr
+                      className="history-group-row"
+                      onClick={() => toggleGroup(g.key)}
+                      title="Haz clic para expandir u ocultar este grupo"
+                    >
+                      <td colSpan={6}>
+                        <div className="history-group-header">
+                          <div className="history-group-title">
+                            <span className="history-group-chevron">
+                              {collapsedGroups[g.key] ? '▶' : '▼'}
+                            </span>
+                            <span className="agent-badge">{g.agent}</span>
+                            <span className="history-group-sep">/</span>
+                            <strong className="history-group-model">{g.model}</strong>
+                          </div>
+                          <div className="history-group-meta">
+                            <span className="history-group-count">
+                              {g.events.length}{' '}
+                              {g.events.length === 1 ? 'solicitud' : 'solicitudes'}
+                              {!expanded && allEvents.length > 6 ? ' (recientes)' : ''}
+                            </span>
+                            <span className="history-group-latest">
+                              Última: {time(g.latestOccurredAt)}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                    {!collapsedGroups[g.key] && g.events.map(renderEventRow)}
+                  </React.Fragment>
+                ))
+              : displayedEvents.map(renderEventRow)}
+          </tbody>
+        </table>
+      </div>
+      {allEvents.length > 6 && (
+        <div className="history-accordion-bar">
+          <button
+            type="button"
+            className="history-accordion-btn"
+            onClick={() => setExpanded((prev) => !prev)}
+            aria-expanded={expanded}
+          >
+            <span className="accordion-chevron">{expanded ? '▲' : '▼'}</span>
+            <strong>
+              {expanded
+                ? 'Mostrar vista compacta (6 más recientes)'
+                : `Ver historial completo de solicitudes (${allEvents.length} en esta página)`}
+            </strong>
+            <span className="accordion-badge">
+              {expanded ? '6 visibles' : `+${allEvents.length - 6} más`}
+            </span>
+          </button>
+        </div>
+      )}
+      {!history?.total && (
+        <div className="empty">
+          <Icon />
+          <h3>Esperando la próxima respuesta</h3>
+          <p>
+            {agent
+              ? `${agent} aparecerá aquí al recibir métricas verificables.`
+              : 'AI Usage Monitor espera consumo nuevo de las fuentes compatibles.'}
+            <br />
+            Prueba otra ventana o deja que tu agente siga trabajando.
+          </p>
+        </div>
+      )}
+      {!!history?.total && (
+        <div className="pagination">
+          <span>{history.total} respuestas en esta selección</span>
+          <div>
+            <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>
+              ← Anterior
+            </button>
+            <button disabled={offset + 50 >= history.total} onClick={() => setOffset(offset + 50)}>
+              Siguiente →
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
 function App() {
   const [session, setSession] = useState(null),
     [data, setData] = useState(null),
@@ -432,7 +739,8 @@ function App() {
     [clock, setClock] = useState(Date.now()),
     [tab, setTab] = useState('overview'),
     [pulse, setPulse] = useState(0),
-    [loadedQuery, setLoadedQuery] = useState('');
+    [loadedQuery, setLoadedQuery] = useState(''),
+    [sidebarOpen, setSidebarOpen] = useState(true);
   const ended = useRef(false),
     current = useRef({ window, agent, model, provider, sessionId, method, offset }),
     trigger = useRef(() => {}),
@@ -588,6 +896,15 @@ function App() {
     nodes.forEach((n) => io.observe(n));
     return () => io.disconnect();
   }, [data, tab, agent]);
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape' && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [sidebarOpen]);
   const change = (setter, v) => {
     setOffset(0);
     setter(v);
@@ -612,7 +929,6 @@ function App() {
     setSessionId('');
     setMethod('');
     setOffset(0);
-    setTab('overview');
   };
   const agents = agentList(data?.options.agents ?? [], sources?.agents ?? []),
     selectedAgent = agents.find((x) => x.name === agent),
@@ -620,27 +936,72 @@ function App() {
   const remaining = session ? Math.max(0, Date.parse(session.expiresAt) - clock) : 0;
   const remainingText = `${Math.floor(remaining / 3600000)} h ${Math.floor((remaining % 3600000) / 60000)} min`;
   return (
-    <div className="shell">
-      <aside>
-        <a className="brand" href="/" aria-label="Monitor de consumo, inicio">
-          <Icon />
-          Consumo IA<span>●</span>
-        </a>
-        <span className="nav-label">WORKSPACE</span>
-        <nav aria-label="Principal">
+    <div className={`shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-collapsed'}`}>
+      {sidebarOpen && (
+        <div
+          className="sidebar-backdrop"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        id="app-sidebar"
+        className={`offcanvas-sidebar ${sidebarOpen ? 'open' : 'collapsed'}`}
+        aria-label="Navegación principal"
+        aria-hidden={!sidebarOpen}
+      >
+        <div className="aside-header">
+          <a className="brand" href="/" aria-label="Monitor de consumo, inicio">
+            <Icon />
+            Consumo IA<span>●</span>
+          </a>
           <button
-            className={tab === 'overview' && !agent ? 'active' : ''}
-            onClick={() => selectAgent('')}
+            type="button"
+            className="sidebar-close-btn"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Cerrar barra lateral"
+            title="Cerrar barra lateral"
           >
-            <Icon type="grid" />
-            Vista general
+            <Icon type="close" />
           </button>
-          <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>
-            <span className="history-icon">↺</span>Actividad
-          </button>
-        </nav>
-        <span className="nav-label agents-label">AGENTES</span>
-        <AgentNavigation agents={agents} selected={agent} onSelect={selectAgent} />
+        </div>
+        <div className="aside-scroll">
+          <span className="nav-label">WORKSPACE</span>
+          <nav aria-label="Principal">
+            <button
+              className={tab === 'overview' && !agent ? 'active' : ''}
+              onClick={() => {
+                selectAgent('');
+                setTab('overview');
+              }}
+            >
+              <Icon type="grid" />
+              Vista general
+            </button>
+            <button
+              className={tab === 'history' && !agent ? 'active' : ''}
+              onClick={() => {
+                selectAgent('');
+                setTab('history');
+              }}
+            >
+              <span className="history-icon">↺</span>
+              Historial de eventos
+            </button>
+            <button
+              className={tab === 'sources' && !agent ? 'active' : ''}
+              onClick={() => {
+                selectAgent('');
+                setTab('sources');
+              }}
+            >
+              <Icon type="sources" />
+              Fuentes y precisión
+            </button>
+          </nav>
+          <span className="nav-label agents-label">AGENTES ACTIVOS ({agents.length})</span>
+          <AgentNavigation agents={agents} selected={agent} onSelect={selectAgent} />
+        </div>
         <div className="sidebar-bottom">
           <span className="lock">◇</span>
           <div>
@@ -650,10 +1011,32 @@ function App() {
       </aside>
       <div className="main-wrap">
         <header>
-          <span>
-            Workspace <b>/</b>{' '}
-            <strong>{agent || (tab === 'overview' ? 'Vista general' : 'Actividad')}</strong>
-          </span>
+          <div className="header-left">
+            <button
+              type="button"
+              className="sidebar-toggle"
+              onClick={() => setSidebarOpen((prev) => !prev)}
+              aria-label={sidebarOpen ? 'Ocultar barra lateral' : 'Mostrar barra lateral'}
+              aria-expanded={sidebarOpen}
+              aria-controls="app-sidebar"
+              title={sidebarOpen ? 'Ocultar barra lateral (Off-canvas)' : 'Mostrar barra lateral'}
+            >
+              <Icon type={sidebarOpen ? 'sidebar-collapse' : 'sidebar-expand'} />
+              <span className="sidebar-toggle-text">{sidebarOpen ? 'Ocultar menú' : 'Menú'}</span>
+            </button>
+            <span className="breadcrumb">
+              Workspace <b>/</b>{' '}
+              <strong>
+                {agent
+                  ? agent
+                  : tab === 'overview'
+                    ? 'Vista general'
+                    : tab === 'sources'
+                      ? 'Fuentes y precisión'
+                      : 'Historial'}
+              </strong>
+            </span>
+          </div>
           <div className="header-right">
             <span
               className="session"
@@ -681,12 +1064,18 @@ function App() {
                   ? `${agent}, en tiempo real.`
                   : tab === 'overview'
                     ? 'Cada token, en perspectiva.'
-                    : 'El detalle de cada respuesta.'}
+                    : tab === 'sources'
+                      ? 'Fuentes de datos y precisión técnica.'
+                      : 'El detalle de cada respuesta.'}
               </h1>
               <p>
                 {agent
                   ? 'Métricas, gráficas y actividad de este agente.'
-                  : 'Una vista clara del consumo de tus agentes.'}
+                  : tab === 'sources'
+                    ? 'Estado de los lectores, tokenizadores locales y conciliación sin alterar agentes.'
+                    : tab === 'overview'
+                      ? 'Una vista clara del consumo de tus agentes.'
+                      : 'El detalle de cada respuesta.'}
               </p>
             </div>
             <span className={'live ' + (connection === 'En vivo' ? '' : 'offline')}>
@@ -798,25 +1187,31 @@ function App() {
               {agent ? `Cargando métricas de ${agent}…` : 'Preparando tu espacio…'}
             </div>
           ) : (
-            <>
-              {selectedAgent ? (
-                <AgentStatus
-                  agent={selectedAgent}
-                  data={data}
-                  source={sources?.[selectedAgent.source]}
-                  connected={connection === 'En vivo'}
-                />
-              ) : (
-                tab === 'overview' && (
-                  <AgentSections
-                    agents={agents}
-                    data={data}
-                    sources={sources}
-                    connected={connection === 'En vivo'}
-                    onSelect={selectAgent}
-                  />
-                )
-              )}
+            <div className="tab-content" key={agent || tab}>
+              <LiveTelemetry
+                agent={selectedAgent || { name: 'Global', tone: 'mint', symbol: '◈' }}
+                metrics={
+                  selectedAgent
+                    ? data.agentPanels?.find((panel) => panel.name === selectedAgent.name)
+                    : {
+                        buckets: data.buckets,
+                        inputTokens: data.totals.inputTokens,
+                        outputTokens: data.totals.outputTokens,
+                        cachedInputTokens: data.totals.cachedInputTokens,
+                        reasoningOutputTokens: data.totals.reasoningOutputTokens,
+                        count: data.totals.count,
+                        costUsd: data.totals.costUsd,
+                        lastEventAt: data.buckets?.at(-1)?.at,
+                      }
+                }
+                source={
+                  selectedAgent
+                    ? sources?.[selectedAgent.source]
+                    : { state: 'running', label: 'Monitor global activo' }
+                }
+                connected={connection === 'En vivo'}
+                pulse={pulse}
+              />
               <div className="stats" key={pulse}>
                 <article className="stat">
                   <div>
@@ -883,182 +1278,88 @@ function App() {
                   )}
                 </div>
               )}
-              <div className="subscription-note reveal">
-                <strong>Equivalencia de API, no gasto de tu suscripción.</strong> AI Usage Monitor
-                no consulta tu factura ni atribuye cargos adicionales. Los importes simulan este
-                consumo con tarifas públicas.
-              </div>
-              {tab === 'overview' && (
+              {selectedAgent ? (
                 <>
+                  <AgentStatus
+                    agent={selectedAgent}
+                    data={data}
+                    source={sources?.[selectedAgent.source]}
+                    connected={connection === 'En vivo'}
+                  />
+                  <Chart key={`tokens-${agent}`} data={data} />
+                  <HistoryPanel
+                    history={history}
+                    agent={agent}
+                    offset={offset}
+                    setOffset={setOffset}
+                  />
+                </>
+              ) : tab === 'overview' ? (
+                <>
+                  <AgentSections
+                    agents={agents}
+                    data={data}
+                    sources={sources}
+                    connected={connection === 'En vivo'}
+                    onSelect={selectAgent}
+                    selected={agent}
+                  />
+                  <div className="subscription-note reveal">
+                    <strong>Equivalencia de API, no gasto de tu suscripción.</strong> AI Usage
+                    Monitor no consulta tu factura ni atribuye cargos adicionales. Los importes
+                    simulan este consumo con tarifas públicas.
+                  </div>
                   <Breakdown data={data} />
                   <Chart key={`tokens-${agent}`} data={data} />
                   <div className="lower-grid">
                     <Chart key={`cost-${agent}`} data={data} cost />
                     <Distribution data={data} />
                   </div>
-                </>
-              )}
-              <section className="panel history reveal">
-                <div className="panel-heading">
-                  <div>
-                    <h2>
-                      {agent ? `Actividad de ${agent}` : 'Actividad reciente'}{' '}
-                      <span className="count">{history?.total ?? 0}</span>
-                    </h2>
-                    <p>Respuestas registradas · sin prompts ni contenido</p>
-                  </div>
-                  <span className="subtle">
-                    {history
-                      ? `${Math.min(offset + 1, history.total)}–${Math.min(offset + 50, history.total)}`
-                      : ''}
-                  </span>
-                </div>
-                <div className="table-scroll">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Momento</th>
-                        <th>Agente / modelo</th>
-                        <th>Entrada</th>
-                        <th>Salida</th>
-                        <th>Equivalente API</th>
-                        <th>Detalle</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {history?.events.map((e) => (
-                        <tr key={e.id}>
-                          <td>
-                            <time dateTime={e.occurredAt} title={fulltime(e.occurredAt)}>
-                              {fulltime(e.occurredAt)}
-                            </time>
-                          </td>
-                          <td>
-                            <span className="agent-badge">{e.agent}</span>
-                            <small>{e.model}</small>
-                          </td>
-                          <td>{exact(e.inputTokens)}</td>
-                          <td>{exact(e.outputTokens)}</td>
-                          <td title={e.costUsd ? `USD ${e.costUsd}` : e.costNote}>
-                            {money(e.costUsd)}
-                          </td>
-                          <td>
-                            <details>
-                              <summary aria-label={`Detalles de respuesta ${e.id}`}>Ver</summary>
-                              <div className="event-detail">
-                                Caché leída: {exact(e.cachedInputTokens)}
-                                <br />
-                                Caché escrita: {exact(e.cacheWriteInputTokens)}
-                                <br />
-                                Razonamiento: {exact(e.reasoningOutputTokens)}
-                                <br />
-                                USD entrada: {e.costInputUsd ?? '—'}
-                                <br />
-                                USD caché leída / escrita: {e.costCacheReadUsd ?? '—'} /{' '}
-                                {e.costCacheWriteUsd ?? '—'}
-                                <br />
-                                USD salida visible / razonamiento: {e.costVisibleOutputUsd ??
-                                  '—'} / {e.costReasoningUsd ?? '—'}
-                                <br />
-                                {e.costNote}
-                                <br />
-                                {e.source} · {e.provider}
-                                <br />
-                                Método: {e.method === 'native' ? 'contador nativo' : 'declarado'}
-                                <br />
-                                Sesión: {e.sessionId ?? 'desconocida'}
-                                <br />
-                                Turno: {e.turnId ?? 'desconocido'}
-                                <br />
-                                Formato: {e.sourceVersion ?? 'sin verificar'}
-                                <br />
-                                Cobertura:{' '}
-                                {e.coverage === 'agent_normalized_usage_zero_defaults_possible'
-                                  ? 'Contador del agente; algunos ceros pueden ser valores por defecto'
-                                  : e.coverage === 'provider_response_usage'
-                                    ? 'Uso nativo por respuesta'
-                                    : (e.coverage ?? 'desconocida')}
-                                <br />
-                                Tarifas: {e.pricingVersion ?? 'registro anterior'} · Standard
-                                supuesto
-                                <br />
-                                <span className="response-id">{e.responseId}</span>
-                              </div>
-                            </details>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {!history?.total && (
-                  <div className="empty">
-                    <Icon />
-                    <h3>Esperando la próxima respuesta</h3>
+                  <HistoryPanel
+                    history={history}
+                    agent={agent}
+                    offset={offset}
+                    setOffset={setOffset}
+                  />
+                  <details className="pricing-note reveal" style={{ marginTop: '20px' }}>
+                    <summary>Cómo se calcula la estimación de costes</summary>
                     <p>
-                      {agent
-                        ? `${agent} aparecerá aquí al recibir métricas verificables.`
-                        : 'AI Usage Monitor espera consumo nuevo de las fuentes compatibles.'}
-                      <br />
-                      Prueba otra ventana o deja que tu agente siga trabajando.
+                      {data.pricingNote} Los importes son calculados en base a tarifas equivalentes
+                      públicas de APIs para cada modelo.
                     </p>
-                  </div>
-                )}
-                {!!history?.total && (
-                  <div className="pagination">
-                    <span>{history.total} respuestas en esta selección</span>
-                    <div>
-                      <button
-                        disabled={offset === 0}
-                        onClick={() => setOffset(Math.max(0, offset - 50))}
-                      >
-                        ← Anterior
-                      </button>
-                      <button
-                        disabled={offset + 50 >= history.total}
-                        onClick={() => setOffset(offset + 50)}
-                      >
-                        Siguiente →
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </section>
-              <SourcesPanel sources={sources} reconciliation={reconciliation} agent={agent} />
-              <details className="pricing-note reveal">
-                <summary>Cómo se estima el coste</summary>
-                <p>
-                  {data.pricingNote} Los desgloses ausentes se muestran como desconocidos; los
-                  subtotales solo incluyen valores disponibles.{' '}
-                  <a
-                    href="https://developers.openai.com/api/docs/pricing"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    OpenAI ↗
-                  </a>{' '}
-                  ·{' '}
-                  <a
-                    href="https://ai.google.dev/gemini-api/docs/pricing"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Google ↗
-                  </a>
-                </p>
-              </details>
+                  </details>
+                </>
+              ) : tab === 'sources' ? (
+                <>
+                  <SourcesPanel sources={sources} reconciliation={reconciliation} agent={agent} />
+                  <details className="pricing-note reveal" style={{ marginTop: '20px' }}>
+                    <summary>Cómo se calcula la estimación de costes</summary>
+                    <p>
+                      {data.pricingNote} Los importes son calculados en base a tarifas equivalentes
+                      públicas de APIs para cada modelo.
+                    </p>
+                  </details>
+                </>
+              ) : (
+                <HistoryPanel
+                  history={history}
+                  agent={agent}
+                  offset={offset}
+                  setOffset={setOffset}
+                />
+              )}
               <footer>
                 <div>
                   <i className={connection === 'En vivo' ? 'mint' : 'violet'} />
                   {agent || 'Todos los agentes'} ·{' '}
                   {connection === 'En vivo' ? 'Actualización en vivo' : 'Reconectando'}
-                  <span>Los lectores activos revisan nuevos registros cada 2 s</span>
+                  <span>Los lectores activos revisan nuevos registros periódicamente</span>
                 </div>
                 <span>
                   Actualizado {time(data.updatedAt)} · Recogida desde {fulltime(data.activation)}
                 </span>
               </footer>
-            </>
+            </div>
           )}
         </main>
       </div>

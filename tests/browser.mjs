@@ -117,7 +117,7 @@ try {
         });
       api.broadcast();
       await page.getByText('155 respuestas en esta selección', { exact: true }).waitFor();
-      assert.equal(await page.locator('.agent-card').count(), 3);
+      assert.equal(await page.locator('.agent-card').count(), 2);
       await page
         .getByRole('button', { name: 'Abrir apartado de Antigravity', exact: true })
         .click();
@@ -181,7 +181,9 @@ try {
       await page.getByText('1 respuestas en esta selección', { exact: true }).waitFor();
       await page.getByLabel('Filtrar por método').selectOption('');
       await page.getByText('156 respuestas en esta selección', { exact: true }).waitFor();
+      await page.getByRole('button', { name: 'Fuentes y precisión', exact: true }).click();
       await page.getByRole('heading', { name: 'Fuentes y precisión' }).waitFor();
+      await page.getByRole('button', { name: 'Vista general', exact: true }).click();
       await page.getByRole('heading', { name: 'Qué se está contando' }).waitFor();
       await context.setOffline(true);
       await context.setOffline(false);
@@ -216,6 +218,46 @@ try {
     await page.screenshot({ path: `test-results/${name}-antigravity.png`, fullPage: true });
     await page.getByRole('button', { name: 'Vista general', exact: true }).click();
     await page.getByText('156 respuestas en esta selección', { exact: true }).waitFor();
+    // Off-canvas collapsible sidebar: collapse to make the web cleaner, expand on demand.
+    if (name === 'desktop') {
+      await page.getByRole('button', { name: 'Ocultar barra lateral', exact: true }).click();
+      assert.equal(
+        await page.evaluate(() => document.querySelector('aside').classList.contains('collapsed')),
+        true,
+        'desktop sidebar collapsed',
+      );
+      assert.equal(
+        await page.evaluate(() => document.querySelector('.main-wrap').offsetLeft === 0),
+        true,
+        'desktop main-wrap expanded to full width when sidebar collapsed',
+      );
+      await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
+      assert.equal(
+        await page.evaluate(() => document.querySelector('aside').classList.contains('open')),
+        true,
+        'desktop sidebar expanded',
+      );
+      await page.getByRole('button', { name: 'Cerrar barra lateral', exact: true }).click();
+      assert.equal(
+        await page.evaluate(() => document.querySelector('aside').classList.contains('collapsed')),
+        true,
+        'desktop sidebar closed via close button',
+      );
+      await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
+    } else {
+      await page.getByRole('button', { name: 'Cerrar barra lateral', exact: true }).click();
+      assert.equal(
+        await page.evaluate(() => document.querySelector('aside').classList.contains('collapsed')),
+        true,
+        'mobile sidebar collapsed offcanvas',
+      );
+      await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
+      assert.equal(
+        await page.evaluate(() => document.querySelector('aside').classList.contains('open')),
+        true,
+        'mobile sidebar opened via toggle button',
+      );
+    }
     // External navigation with a Strict cookie must restore the existing session.
     await page.goto('https://usage-monitor-entry-test.example/');
     await page.getByRole('link', { name: 'Abrir AI Usage Monitor' }).click();

@@ -90,7 +90,9 @@ try {
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(c.origin);
   await page.getByRole('heading', { name: 'Cada token, en perspectiva.' }).waitFor();
+  await page.getByRole('button', { name: 'Fuentes y precisión', exact: true }).click();
   await page.getByRole('heading', { name: 'Fuentes y precisión' }).waitFor();
+  await page.getByRole('button', { name: 'Vista general', exact: true }).click();
   await page.getByRole('button', { name: '24 horas', exact: true }).click();
   await page
     .getByText('Equivalencia de API, no gasto de tu suscripción.', { exact: true })

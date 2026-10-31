@@ -1,10 +1,21 @@
 import express from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { resolve } from 'node:path';
-import { hash, exchange, filters, events, analytics, insertEvent } from './db.js';
-import { antigravity } from './usage.js';
+import {
+  hash,
+  exchange,
+  filters,
+  events,
+  analytics,
+  insertEvent,
+  insertDynamicAgent,
+  getDynamicAgents,
+  setDynamicPricing,
+} from './db.js';
+import { antigravity, contractMessage } from './usage.js';
 import { agents } from './catalog.js';
 import { reconcile } from './provenance.js';
+import { discoverLocalTechnologies } from './discovery.js';
 export const cookieName = '__Host-usage-monitor';
 export const equal = (a, b) =>
   typeof a === 'string' &&
@@ -80,13 +91,63 @@ export function createApp({
     )
       return res.status(403).json({ error: 'Ingesta local protegida' });
     try {
-      const input = req.body.source === 'antigravity' ? antigravity(req.body) : req.body;
+      let input;
+      if (req.body?.schema === 'usage-monitor.usage.v1') {
+        const sourceId = req.body.source || 'custom';
+        const dynamicAgents = getDynamicAgents(db);
+        let agentDef =
+          dynamicAgents.find((a) => a.id === sourceId) || agents.find((a) => a.id === sourceId);
+        if (!agentDef && sourceId) {
+          const name = req.body.agent || sourceId.slice(0, 1).toUpperCase() + sourceId.slice(1);
+          insertDynamicAgent(db, {
+            id: sourceId,
+            name,
+            reader: 'contract',
+            provider: req.body.provider || 'custom',
+            created_at: Date.now(),
+          });
+          agentDef = { id: sourceId, name, reader: 'contract', provider: req.body.provider };
+        }
+        input = contractMessage(req.body, agentDef);
+      } else {
+        input = req.body.source === 'antigravity' ? antigravity(req.body) : req.body;
+      }
       const result = db.transaction(() => insertEvent(db, input)).immediate();
       if (result === 'inserted') broadcast();
       res.status(result === 'conflict' ? 409 : 200).json({ result });
     } catch {
       res.status(422).json({ error: 'Métricas o semántica no verificables' });
     }
+  });
+  app.post('/api/agents/register', (req, res) => {
+    const isDirect = equal(req.headers.authorization, `Bearer ${ingestKey}`);
+    const isGateway = equal(req.headers['x-usage-monitor-gateway'], gatewayKey);
+    if (!isDirect && !isGateway) return res.status(403).json({ error: 'Autorización requerida' });
+    const { id, name, reader, provider, tone, symbol, config, rates } = req.body || {};
+    if (!id || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) {
+      return res.status(400).json({ error: 'Identificador de agente inválido' });
+    }
+    const cleanReader = ['contract', 'sqlite', 'jsonl'].includes(reader) ? reader : 'contract';
+    const cleanName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 100) : id;
+    insertDynamicAgent(db, {
+      id,
+      name: cleanName,
+      reader: cleanReader,
+      provider: provider || 'custom',
+      tone: tone || null,
+      symbol: symbol || null,
+      config: config || {},
+      created_at: Date.now(),
+    });
+    if (rates && typeof rates === 'object') {
+      for (const [model, p] of Object.entries(rates)) {
+        if (p && p.input && p.output) {
+          setDynamicPricing(db, { model, ...p });
+        }
+      }
+    }
+    broadcast();
+    res.json({ ok: true, agent: { id, name: cleanName, reader: cleanReader } });
   });
   app.use((req, res, next) => {
     if (!equal(req.headers['x-usage-monitor-gateway'], gatewayKey))
@@ -157,9 +218,9 @@ export function createApp({
     res.json({ csrf: s.csrf, expiresAt: new Date(s.expires).toISOString() });
   });
   // Only the isolated access screen and its stylesheet/script are public.
-  app.get('/access', (_req, res) => res.sendFile(resolve(dist, 'access.html')));
-  app.get('/access.js', (_req, res) => res.sendFile(resolve(dist, 'access.js')));
-  app.get('/access.css', (_req, res) => res.sendFile(resolve(dist, 'access.css')));
+  app.get('/access', (_req, res) => res.sendFile('access.html', { root: dist }));
+  app.get('/access.js', (_req, res) => res.sendFile('access.js', { root: dist }));
+  app.get('/access.css', (_req, res) => res.sendFile('access.css', { root: dist }));
   app.use((req, res, next) => {
     req.session = authenticate(req);
     if (!req.session) {
@@ -192,20 +253,44 @@ export function createApp({
       res.status(400).json({ error: 'Filtros inválidos' });
     }
   });
-  app.get('/api/sources', (_req, res) =>
+  app.get('/api/sources', (_req, res) => {
+    const dynamic = getDynamicAgents(db);
+    const dynamicMap = new Map(dynamic.map((a) => [a.id, a]));
+    const merged = agents.map((a) =>
+      dynamicMap.has(a.id) ? { ...a, ...dynamicMap.get(a.id) } : a,
+    );
+    for (const [id, a] of dynamicMap) {
+      if (!agents.some((ag) => ag.id === id)) {
+        merged.push({
+          id: a.id,
+          name: a.name,
+          tone: a.tone || 'mint',
+          symbol: a.symbol || a.name.slice(0, 1).toUpperCase(),
+          reader: a.reader,
+        });
+      }
+    }
     res.json({
       ...readerStatus(),
       ...sources?.status,
       tokenizer: tokenizer?.status ?? { state: 'not_configured' },
-      agents: agents.map(({ id, name, tone, symbol, reader }) => ({
+      agents: merged.map(({ id, name, tone, symbol, reader }) => ({
         id,
         name,
-        tone,
-        symbol,
+        tone: tone || 'mint',
+        symbol: symbol || name.slice(0, 1).toUpperCase(),
         reader,
       })),
-    }),
-  );
+    });
+  });
+  app.get('/api/discovery', (_req, res) => {
+    try {
+      const technologies = discoverLocalTechnologies(process.env);
+      res.json({ technologies });
+    } catch {
+      res.json({ technologies: [] });
+    }
+  });
   app.get('/api/reconciliation', (req, res) => {
     try {
       res.json(reconcile(db, filters(req.query, now())));
@@ -237,7 +322,7 @@ export function createApp({
     });
   });
   app.use(express.static(dist, { index: false, fallthrough: true, dotfiles: 'deny' }));
-  app.get('/', (_req, res) => res.sendFile(resolve(dist, 'index.html')));
+  app.get('/', (_req, res) => res.sendFile('index.html', { root: dist }));
   app.use((_req, res) => res.status(404).json({ error: 'No encontrado' }));
   app.use((err, req, res, _next) =>
     res.status(err.type === 'entity.too.large' ? 413 : 400).json({ error: 'Solicitud inválida' }),

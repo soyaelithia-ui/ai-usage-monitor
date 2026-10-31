@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import JSONbig from 'json-bigint';
-import { insertEvent, recordError, hash } from './db.js';
+import { insertEvent, recordError, hash, getDynamicAgents } from './db.js';
 import { catalogMessage, visibleText } from './adapters.js';
 import { agents } from './catalog.js';
 const parse = JSONbig({
@@ -32,10 +32,10 @@ export class Sources {
     this.activation = Number(
       db.prepare("SELECT value FROM meta WHERE key='activation'").get().value,
     );
-    this.status = {
-      opencode: { state: 'starting' },
-      antigravity: { state: 'starting' },
-    };
+    this.status = {};
+    for (const a of agents) {
+      this.status[a.id] = { state: 'starting' };
+    }
   }
   cursor(path) {
     return JSON.parse(
@@ -203,12 +203,37 @@ export class Sources {
   }
   scan() {
     this.changed = false;
-    for (const name of ['opencode', 'antigravity']) {
+    const allAgents = [...agents];
+    const dyn = getDynamicAgents(this.db);
+    for (const d of dyn) {
+      if (!allAgents.some((a) => a.id === d.id)) allAgents.push(d);
+    }
+    for (const agent of allAgents) {
+      if (!this.status[agent.id]) {
+        this.status[agent.id] = { state: 'starting' };
+      }
       try {
-        this[name]();
+        if (typeof this[agent.id] === 'function') {
+          this[agent.id]();
+        } else if (agent.reader === 'sqlite' && agent.query) {
+          const path = agent.config?.path || this.paths[agent.configKey || agent.id];
+          if (!path || !existsSync(path)) {
+            this.status[agent.id] = { state: 'waiting', reason: 'Sin base de datos configurada' };
+          } else {
+            this.status[agent.id] = {
+              state: 'running',
+              lastScan: new Date().toISOString(),
+            };
+          }
+        } else if (agent.reader === 'contract') {
+          this.status[agent.id] = {
+            state: 'running',
+            lastScan: new Date().toISOString(),
+          };
+        }
       } catch {
-        this.status[name] = { state: 'error' };
-        recordError(this.db, name + '_scan_failed');
+        this.status[agent.id] = { state: 'error' };
+        recordError(this.db, agent.id + '_scan_failed');
       }
     }
     if (this.changed) this.onChange();
