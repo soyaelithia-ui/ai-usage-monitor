@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { existsSync, readdirSync, statSync, watch } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import JSONbig from 'json-bigint';
 import { insertEvent, recordError, hash, getDynamicAgents } from './db.js';
 import { catalogMessage, visibleText } from './adapters.js';
@@ -246,10 +246,21 @@ export class Sources {
         try {
           const w = watch(p, () => {
             clearTimeout(this.watchDebounce);
-            this.watchDebounce = setTimeout(() => this.scan(), 50);
+            this.watchDebounce = setTimeout(() => this.scan(), 30);
           });
           w.on('error', () => {});
           this.watchers.push(w);
+          const dir = dirname(p);
+          if (dir && dir !== p && existsSync(dir)) {
+            try {
+              const dw = watch(dir, () => {
+                clearTimeout(this.watchDebounce);
+                this.watchDebounce = setTimeout(() => this.scan(), 30);
+              });
+              dw.on('error', () => {});
+              this.watchers.push(dw);
+            } catch {}
+          }
         } catch {}
       }
     }

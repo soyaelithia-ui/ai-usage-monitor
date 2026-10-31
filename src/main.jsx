@@ -69,12 +69,13 @@ const money = (x) =>
       }).format(Number(x));
 const time = (x) => new Date(x).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
 const fulltime = (x) => new Date(x).toLocaleString('es-ES');
-function Icon({ type = 'activity' }) {
+function Icon({ type = 'activity', className = '', size = 20 }) {
   return (
     <svg
+      className={className}
       viewBox="0 0 24 24"
-      width="20"
-      height="20"
+      width={size}
+      height={size}
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
@@ -90,6 +91,27 @@ function Icon({ type = 'activity' }) {
           <rect x="14" y="3" width="7" height="7" rx="1" />
           <rect x="3" y="14" width="7" height="7" rx="1" />
           <rect x="14" y="14" width="7" height="7" rx="1" />
+        </>
+      ) : type === 'history' ? (
+        <>
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+          <path d="M12 7v5l4 2" />
+        </>
+      ) : type === 'shield' || type === 'lock' ? (
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      ) : type === 'token' ? (
+        <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+      ) : type === 'arrow-down' ? (
+        <path d="M12 5v14M19 12l-7 7-7-7" strokeWidth="2" />
+      ) : type === 'arrow-up' ? (
+        <path d="M12 19V5M5 12l7-7 7 7" strokeWidth="2" />
+      ) : type === 'arrow-up-right' ? (
+        <path d="M7 17L17 7M7 7h10v10" strokeWidth="2" />
+      ) : type === 'clock' ? (
+        <>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 3" />
         </>
       ) : type === 'sidebar' ? (
         <>
@@ -309,7 +331,7 @@ function Chart({ data, cost = false }) {
   );
 }
 function Distribution({ data }) {
-  const [kind, setKind] = useState('models');
+  const [kind, setKind] = useState(() => getStored('distribution_kind', 'models'));
   const rows = data[kind];
   const max = Math.max(1, ...rows.map((r) => Number(r.totalTokens)));
   return (
@@ -322,7 +344,11 @@ function Distribution({ data }) {
         <select
           aria-label="Distribución por"
           value={kind}
-          onChange={(e) => setKind(e.target.value)}
+          onChange={(e) => {
+            const val = e.target.value;
+            setKind(val);
+            setStored('distribution_kind', val);
+          }}
         >
           <option value="models">Modelo</option>
           <option value="agents">Agente</option>
@@ -369,7 +395,7 @@ const fallbackSources = [
   { id: 'antigravity', name: 'Antigravity' },
 ];
 const stateLabels = {
-  running: 'Activo · cada 2 s',
+  running: 'Activo · tiempo real',
   waiting: 'Esperando registros',
   unsupported: 'Formato no verificable',
   error: 'Revisar lectura',
@@ -875,7 +901,7 @@ function StatsRow({ data }) {
     <div className="stats">
       <article className="stat">
         <div>
-          Tokens totales <span aria-hidden="true">◈</span>
+          Tokens totales <span className="stat-icon" aria-hidden="true"><Icon type="token" size={13} /></span>
         </div>
         <strong title={exact(data.totals.totalTokens)}>
           <AnimatedNumber value={data.totals.totalTokens} format={compact} />
@@ -887,8 +913,8 @@ function StatsRow({ data }) {
       <article className="stat">
         <div>
           Entrada{' '}
-          <span className="mint-text" aria-hidden="true">
-            ↓
+          <span className="mint-text stat-icon" aria-hidden="true">
+            <Icon type="arrow-down" size={13} />
           </span>
         </div>
         <strong>
@@ -902,8 +928,8 @@ function StatsRow({ data }) {
       <article className="stat">
         <div>
           Salida{' '}
-          <span className="violet-text" aria-hidden="true">
-            ↑
+          <span className="violet-text stat-icon" aria-hidden="true">
+            <Icon type="arrow-up" size={13} />
           </span>
         </div>
         <strong>
@@ -916,7 +942,10 @@ function StatsRow({ data }) {
       </article>
       <article className="stat cost">
         <div>
-          Equivalente API estimado <span aria-hidden="true">↗</span>
+          Equivalente API estimado{' '}
+          <span className="stat-icon" aria-hidden="true">
+            <Icon type="arrow-up-right" size={13} />
+          </span>
         </div>
         <strong>
           {data.totals.count === data.totals.unpriced && data.totals.count > 0 ? (
@@ -1007,7 +1036,7 @@ function App() {
         dirty = true;
         return;
       }
-      const delay = 80 - (Date.now() - last);
+      const delay = 40 - (Date.now() - last);
       if (delay > 0) {
         clearTimeout(timer);
         timer = setTimeout(refresh, delay);
@@ -1097,6 +1126,18 @@ function App() {
       clearInterval(tick);
       document.removeEventListener('visibilitychange', visible);
     };
+  }, []);
+  useEffect(() => {
+    let wasMobile = isMobileViewport();
+    const handleResize = () => {
+      const isMobile = isMobileViewport();
+      if (isMobile && !wasMobile) {
+        setSidebarOpen(false);
+      }
+      wasMobile = isMobile;
+    };
+    globalThis.addEventListener('resize', handleResize);
+    return () => globalThis.removeEventListener('resize', handleResize);
   }, []);
   useEffect(() => {
     trigger.current();
@@ -1242,7 +1283,7 @@ function App() {
               onClick={() => selectTab('history')}
             >
               <span className="history-icon" aria-hidden="true">
-                ↺
+                <Icon type="history" size={16} />
               </span>
               Historial de eventos
             </button>
@@ -1261,7 +1302,7 @@ function App() {
         </div>
         <div className="sidebar-bottom">
           <span className="lock" aria-hidden="true">
-            ◇
+            <Icon type="shield" size={16} />
           </span>
           <div>
             Espacio privado<small>Solo este navegador</small>
@@ -1302,7 +1343,9 @@ function App() {
               className="session"
               title={session ? `Caduca ${fulltime(session.expiresAt)}` : ''}
             >
-              <span aria-hidden="true">◷ </span>
+              <span className="session-clock" aria-hidden="true">
+                <Icon type="clock" size={13} />
+              </span>
               {remainingText}
             </span>
             <button

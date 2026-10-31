@@ -229,3 +229,51 @@ test('unseen agents in incoming events auto-register dynamically', () => {
   assert.equal(found.symbol, 'C');
   db.close();
 });
+
+test('dynamic agents register with rose/cyan tones and custom iconUrl via API', async () => {
+  const db = openDb(':memory:');
+  const { app, close } = createApp({
+    db,
+    origin: 'https://usage.test',
+    gatewayKey: 'gw-key',
+    ingestKey: 'ing-key',
+    dist: process.cwd() + '/public',
+  });
+  try {
+    const res = await request(app)
+      .post('/api/agents/register')
+      .set('authorization', 'Bearer ing-key')
+      .send({
+        id: 'gemini-coder',
+        name: 'Gemini Coder',
+        reader: 'contract',
+        provider: 'google',
+        tone: 'cyan',
+        symbol: 'G',
+        iconUrl: 'https://example.com/gemini.svg',
+      });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.ok, true);
+
+    const dyn = getDynamicAgents(db);
+    const gemini = dyn.find((a) => a.id === 'gemini-coder');
+    assert.ok(gemini);
+    assert.equal(gemini.tone, 'cyan');
+    assert.equal(gemini.config?.iconUrl, 'https://example.com/gemini.svg');
+
+    // Sources endpoint returns the registered agent with its tone and iconUrl
+    const s = exchange(db, issue(db).token);
+    const sourcesRes = await request(app)
+      .get('/api/sources')
+      .set('x-usage-monitor-gateway', 'gw-key')
+      .set('cookie', cookieName + '=' + s.session);
+    assert.equal(sourcesRes.status, 200);
+    const returnedAgent = sourcesRes.body.agents.find((a) => a.id === 'gemini-coder');
+    assert.ok(returnedAgent);
+    assert.equal(returnedAgent.tone, 'cyan');
+    assert.equal(returnedAgent.iconUrl, 'https://example.com/gemini.svg');
+  } finally {
+    close();
+    db.close();
+  }
+});

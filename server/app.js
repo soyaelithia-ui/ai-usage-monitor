@@ -137,7 +137,7 @@ export function createApp({
     const isGateway = equal(req.headers['x-usage-monitor-gateway'], gatewayKey);
     if (!isDirect && !isGateway) return res.status(403).json({ error: 'Autorización requerida' });
     try {
-      const { id, name, reader, provider, tone, symbol, config, rates } = req.body || {};
+      const { id, name, reader, provider, tone, symbol, iconUrl, config, rates } = req.body || {};
       if (!id || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) {
         return res.status(400).json({ error: 'Identificador de agente inválido' });
       }
@@ -145,11 +145,21 @@ export function createApp({
       const cleanName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 100) : id;
       const cleanProvider =
         typeof provider === 'string' && provider.trim() ? provider.trim().slice(0, 64) : 'custom';
-      const cleanTone = ['mint', 'violet', 'blue', 'amber'].includes(tone) ? tone : null;
+      const cleanTone = ['mint', 'violet', 'blue', 'amber', 'rose', 'cyan'].includes(tone)
+        ? tone
+        : null;
       const cleanSymbol =
         typeof symbol === 'string' && symbol.trim() ? symbol.trim().slice(0, 4) : null;
-      const cleanConfig =
-        config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+      const cleanIconUrl =
+        typeof iconUrl === 'string' &&
+        (iconUrl.startsWith('https://') || iconUrl.startsWith('data:image/') || iconUrl.startsWith('/')) &&
+        iconUrl.length <= 2048
+          ? iconUrl.trim()
+          : (config?.iconUrl && typeof config.iconUrl === 'string' ? config.iconUrl.trim() : null);
+      const cleanConfig = {
+        ...(config && typeof config === 'object' && !Array.isArray(config) ? config : {}),
+        ...(cleanIconUrl ? { iconUrl: cleanIconUrl } : {}),
+      };
       insertDynamicAgent(db, {
         id,
         name: cleanName,
@@ -303,6 +313,7 @@ export function createApp({
           tone: a.tone || 'mint',
           symbol: a.symbol || a.name.slice(0, 1).toUpperCase(),
           reader: a.reader,
+          iconUrl: a.config?.iconUrl,
         });
       }
     }
@@ -310,12 +321,13 @@ export function createApp({
       ...readerStatus(),
       ...sources?.status,
       tokenizer: tokenizer?.status ?? { state: 'not_configured' },
-      agents: merged.map(({ id, name, tone, symbol, reader }) => ({
+      agents: merged.map(({ id, name, tone, symbol, reader, config, iconUrl }) => ({
         id,
         name,
         tone: tone || 'mint',
         symbol: symbol || name.slice(0, 1).toUpperCase(),
         reader,
+        iconUrl: iconUrl || config?.iconUrl,
       })),
     });
   });

@@ -1355,6 +1355,30 @@ aside {
   width: 14px;
   height: 14px;
 }
+.agent-img-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: contain;
+  display: block;
+}
+.stat-icon svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+.session-clock svg {
+  display: inline-block;
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+.history-icon svg {
+  display: inline-block;
+  vertical-align: middle;
+}
+.lock svg {
+  display: inline-block;
+  vertical-align: middle;
+}
 .agent-navigation .active .agent-nav-name {
   color: #e1f2e7;
 }
@@ -1647,12 +1671,15 @@ header > span {
 }
 @media (max-width: 600px) {
   .agent-navigation {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
     overflow: visible;
     padding-bottom: 2px;
   }
   .agent-navigation button {
+    width: 100%;
     min-width: 0;
     justify-content: flex-start;
   }

@@ -282,8 +282,11 @@ try {
     );
     // UI state persists across reload
     assert.equal(await page.evaluate(() => localStorage.getItem('pulse_ui_tab')), 'overview');
+    await page.getByLabel('Distribución por').selectOption('agents');
+    assert.equal(await page.evaluate(() => localStorage.getItem('pulse_ui_distribution_kind')), 'agents');
     await page.reload();
     await page.getByText('156 respuestas en esta selección', { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => localStorage.getItem('pulse_ui_distribution_kind')), 'agents');
     if (name === 'desktop') {
       await page.getByRole('button', { name: 'Cerrar sesión' }).click();
       await page.waitForURL('**/access');

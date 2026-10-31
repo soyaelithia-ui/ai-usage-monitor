@@ -185,7 +185,7 @@ export class Collector {
       try {
         this.watcher = watch(this.root, { recursive: true }, () => {
           clearTimeout(this.watchDebounce);
-          this.watchDebounce = setTimeout(() => this.scan(), 50);
+          this.watchDebounce = setTimeout(() => this.scan(), 30);
         });
         this.watcher.on('error', () => {});
       } catch {}
