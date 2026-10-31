@@ -7,11 +7,14 @@ import {
   AgentSections,
   AgentStatus,
   LiveTelemetry,
+  AnimatedNumber,
 } from './agents.jsx';
 const exact = (x) => {
   if (x == null || x === '') return 'No disponible';
   try {
-    return BigInt(x).toLocaleString('es-ES');
+    if (typeof x === 'bigint') return x.toLocaleString('es-ES');
+    const n = Math.round(Number(x));
+    return isNaN(n) ? String(x) : BigInt(n).toLocaleString('es-ES');
   } catch {
     return String(x);
   }
@@ -333,7 +336,9 @@ function Distribution({ data }) {
                 <i className={i % 2 ? 'violet' : 'mint'} />
                 {r.name}
               </span>
-              <strong>{compact(r.totalTokens)}</strong>
+              <strong>
+                <AnimatedNumber value={r.totalTokens} format={compact} />
+              </strong>
               <svg viewBox="0 0 400 5" preserveAspectRatio="none" aria-hidden="true">
                 <rect width="400" height="5" rx="2" fill="#26332e" />
                 <rect
@@ -384,7 +389,9 @@ function Breakdown({ data }) {
       <div className="breakdown-grid">
         <div>
           <span>Entrada normal</span>
-          <strong>{exact(t.normalInputTokens)}</strong>
+          <strong>
+            <AnimatedNumber value={t.normalInputTokens} format={exact} />
+          </strong>
           <small>
             USD {t.costInputUsd}
             {t.unpriced || t.missingCache ? ' · subtotal conocido' : ''}
@@ -393,7 +400,8 @@ function Breakdown({ data }) {
         <div>
           <span>Caché leída / escrita</span>
           <strong>
-            {exact(t.cachedInputTokens)} / {exact(t.cacheWriteInputTokens)}
+            <AnimatedNumber value={t.cachedInputTokens} format={exact} /> /{' '}
+            <AnimatedNumber value={t.cacheWriteInputTokens} format={exact} />
           </strong>
           <small>
             USD {t.costCacheReadUsd} / {t.costCacheWriteUsd}
@@ -403,7 +411,8 @@ function Breakdown({ data }) {
         <div>
           <span>Salida visible / razonamiento</span>
           <strong>
-            {exact(t.visibleOutputTokens)} / {exact(t.reasoningOutputTokens)}
+            <AnimatedNumber value={t.visibleOutputTokens} format={exact} /> /{' '}
+            <AnimatedNumber value={t.reasoningOutputTokens} format={exact} />
           </strong>
           <small>
             USD {t.costVisibleOutputUsd} / {t.costReasoningUsd}
@@ -635,7 +644,12 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
         <div>
           <h2 id="history-title">
             {agent ? `Actividad de ${agent}` : 'Actividad reciente'}{' '}
-            <span className="count">{history?.total ?? 0}</span>
+            <span className="count">
+              <AnimatedNumber
+                value={history?.total ?? 0}
+                format={(v) => Math.round(v).toLocaleString('es-ES')}
+              />
+            </span>
           </h2>
           <p>
             {expanded
@@ -808,6 +822,80 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
     </section>
   );
 }
+function StatsRow({ data }) {
+  return (
+    <div className="stats">
+      <article className="stat">
+        <div>
+          Tokens totales <span aria-hidden="true">◈</span>
+        </div>
+        <strong title={exact(data.totals.totalTokens)}>
+          <AnimatedNumber value={data.totals.totalTokens} format={compact} />
+        </strong>
+        <small>
+          <AnimatedNumber value={data.totals.totalTokens} format={exact} /> tokens exactos
+        </small>
+      </article>
+      <article className="stat">
+        <div>
+          Entrada{' '}
+          <span className="mint-text" aria-hidden="true">
+            ↓
+          </span>
+        </div>
+        <strong>
+          <AnimatedNumber value={data.totals.inputTokens} format={compact} />
+        </strong>
+        <small>
+          <AnimatedNumber value={data.totals.cachedInputTokens} format={exact} /> en caché{' '}
+          {data.totals.missingCache > 0 ? '· parcial' : ''}
+        </small>
+      </article>
+      <article className="stat">
+        <div>
+          Salida{' '}
+          <span className="violet-text" aria-hidden="true">
+            ↑
+          </span>
+        </div>
+        <strong>
+          <AnimatedNumber value={data.totals.outputTokens} format={compact} />
+        </strong>
+        <small>
+          <AnimatedNumber value={data.totals.reasoningOutputTokens} format={exact} /> de
+          razonamiento {data.totals.missingReasoning > 0 ? '· parcial' : ''}
+        </small>
+      </article>
+      <article className="stat cost">
+        <div>
+          Equivalente API estimado <span aria-hidden="true">↗</span>
+        </div>
+        <strong>
+          {data.totals.count === data.totals.unpriced && data.totals.count > 0 ? (
+            'Sin estimar'
+          ) : (
+            <AnimatedNumber value={data.totals.costUsd} format={money} />
+          )}
+        </strong>
+        <small>
+          {data.totals.unpriced ? (
+            `${data.totals.unpriced} respuestas sin estimar`
+          ) : (
+            <>
+              USD ·{' '}
+              <AnimatedNumber
+                value={data.totals.count}
+                format={(v) => Math.round(v).toLocaleString('es-ES')}
+              />{' '}
+              respuestas
+            </>
+          )}
+        </small>
+      </article>
+    </div>
+  );
+}
+
 function App() {
   const [session, setSession] = useState(null),
     [data, setData] = useState(null),
@@ -1294,102 +1382,6 @@ function App() {
             </div>
           ) : (
             <div className="tab-content" key={agent || tab}>
-              <LiveTelemetry
-                agent={selectedAgent || { name: 'Global', tone: 'mint', symbol: '◈' }}
-                metrics={
-                  selectedAgent
-                    ? data.agentPanels?.find((panel) => panel.name === selectedAgent.name)
-                    : {
-                        buckets: data.buckets,
-                        inputTokens: data.totals.inputTokens,
-                        outputTokens: data.totals.outputTokens,
-                        cachedInputTokens: data.totals.cachedInputTokens,
-                        reasoningOutputTokens: data.totals.reasoningOutputTokens,
-                        count: data.totals.count,
-                        costUsd: data.totals.costUsd,
-                        lastEventAt: data.buckets?.at(-1)?.at,
-                      }
-                }
-                source={
-                  selectedAgent
-                    ? sources?.[selectedAgent.source]
-                    : { state: 'running', label: 'Monitor global activo' }
-                }
-                connected={connection === 'En vivo'}
-                pulse={pulse}
-              />
-              <div className="stats" key={pulse}>
-                <article className="stat">
-                  <div>
-                    Tokens totales <span aria-hidden="true">◈</span>
-                  </div>
-                  <strong title={exact(data.totals.totalTokens)}>
-                    {compact(data.totals.totalTokens)}
-                  </strong>
-                  <small>{exact(data.totals.totalTokens)} tokens exactos</small>
-                </article>
-                <article className="stat">
-                  <div>
-                    Entrada{' '}
-                    <span className="mint-text" aria-hidden="true">
-                      ↓
-                    </span>
-                  </div>
-                  <strong>{compact(data.totals.inputTokens)}</strong>
-                  <small>
-                    {exact(data.totals.cachedInputTokens)} en caché{' '}
-                    {data.totals.missingCache > 0 ? '· parcial' : ''}
-                  </small>
-                </article>
-                <article className="stat">
-                  <div>
-                    Salida{' '}
-                    <span className="violet-text" aria-hidden="true">
-                      ↑
-                    </span>
-                  </div>
-                  <strong>{compact(data.totals.outputTokens)}</strong>
-                  <small>
-                    {exact(data.totals.reasoningOutputTokens)} de razonamiento{' '}
-                    {data.totals.missingReasoning > 0 ? '· parcial' : ''}
-                  </small>
-                </article>
-                <article className="stat cost">
-                  <div>
-                    Equivalente API estimado <span aria-hidden="true">↗</span>
-                  </div>
-                  <strong>
-                    {data.totals.count === data.totals.unpriced && data.totals.count > 0
-                      ? 'Sin estimar'
-                      : money(data.totals.costUsd)}
-                  </strong>
-                  <small>
-                    {data.totals.unpriced
-                      ? `${data.totals.unpriced} respuestas sin estimar`
-                      : `USD · ${data.totals.count} respuestas`}
-                  </small>
-                </article>
-              </div>
-              {(data.totals.missingCache > 0 ||
-                data.totals.missingReasoning > 0 ||
-                data.errorCount > 0) && (
-                <div className="notice">
-                  {data.totals.missingCache > 0 &&
-                    `${data.totals.missingCache} respuestas con caché incompleta. `}
-                  {data.totals.missingReasoning > 0 &&
-                    `${data.totals.missingReasoning} sin desglose de razonamiento. `}
-                  {data.errorCount > 0 && (
-                    <details>
-                      <summary>{data.errorCount} incidencias del recolector</summary>
-                      {data.errors.map((e, i) => (
-                        <p key={i}>
-                          {fulltime(e.at)} · {e.kind}
-                        </p>
-                      ))}
-                    </details>
-                  )}
-                </div>
-              )}
               {selectedAgent ? (
                 <>
                   <AgentStatus
@@ -1398,6 +1390,33 @@ function App() {
                     source={sources?.[selectedAgent.source]}
                     connected={connection === 'En vivo'}
                   />
+                  <StatsRow data={data} />
+                  <LiveTelemetry
+                    agent={selectedAgent}
+                    metrics={data.agentPanels?.find((panel) => panel.name === selectedAgent.name)}
+                    source={sources?.[selectedAgent.source]}
+                    connected={connection === 'En vivo'}
+                  />
+                  {(data.totals.missingCache > 0 ||
+                    data.totals.missingReasoning > 0 ||
+                    data.errorCount > 0) && (
+                    <div className="notice">
+                      {data.totals.missingCache > 0 &&
+                        `${data.totals.missingCache} respuestas con caché incompleta. `}
+                      {data.totals.missingReasoning > 0 &&
+                        `${data.totals.missingReasoning} sin desglose de razonamiento. `}
+                      {data.errorCount > 0 && (
+                        <details>
+                          <summary>{data.errorCount} incidencias del recolector</summary>
+                          {data.errors.map((e, i) => (
+                            <p key={i}>
+                              {fulltime(e.at)} · {e.kind}
+                            </p>
+                          ))}
+                        </details>
+                      )}
+                    </div>
+                  )}
                   <Chart key={`tokens-${agent}`} data={data} />
                   <HistoryPanel
                     history={history}
@@ -1408,6 +1427,42 @@ function App() {
                 </>
               ) : tab === 'overview' ? (
                 <>
+                  <StatsRow data={data} />
+                  <LiveTelemetry
+                    agent={{ name: 'Global', tone: 'mint', symbol: '◈' }}
+                    metrics={{
+                      buckets: data.buckets,
+                      inputTokens: data.totals.inputTokens,
+                      outputTokens: data.totals.outputTokens,
+                      cachedInputTokens: data.totals.cachedInputTokens,
+                      reasoningOutputTokens: data.totals.reasoningOutputTokens,
+                      count: data.totals.count,
+                      costUsd: data.totals.costUsd,
+                      lastEventAt: data.buckets?.at(-1)?.at,
+                    }}
+                    source={{ state: 'running', label: 'Monitor global activo' }}
+                    connected={connection === 'En vivo'}
+                  />
+                  {(data.totals.missingCache > 0 ||
+                    data.totals.missingReasoning > 0 ||
+                    data.errorCount > 0) && (
+                    <div className="notice">
+                      {data.totals.missingCache > 0 &&
+                        `${data.totals.missingCache} respuestas con caché incompleta. `}
+                      {data.totals.missingReasoning > 0 &&
+                        `${data.totals.missingReasoning} sin desglose de razonamiento. `}
+                      {data.errorCount > 0 && (
+                        <details>
+                          <summary>{data.errorCount} incidencias del recolector</summary>
+                          {data.errors.map((e, i) => (
+                            <p key={i}>
+                              {fulltime(e.at)} · {e.kind}
+                            </p>
+                          ))}
+                        </details>
+                      )}
+                    </div>
+                  )}
                   <AgentSections
                     agents={agents}
                     data={data}
@@ -1416,11 +1471,6 @@ function App() {
                     onSelect={selectAgent}
                     selected={agent}
                   />
-                  <div className="subscription-note reveal">
-                    <strong>Equivalencia de API, no gasto de tu suscripción.</strong> AI Usage
-                    Monitor no consulta tu factura ni atribuye cargos adicionales. Los importes
-                    simulan este consumo con tarifas públicas.
-                  </div>
                   <Breakdown data={data} />
                   <Chart key={`tokens-${agent}`} data={data} />
                   <div className="lower-grid">
@@ -1433,6 +1483,11 @@ function App() {
                     offset={offset}
                     setOffset={setOffset}
                   />
+                  <div className="subscription-note reveal">
+                    <strong>Equivalencia de API, no gasto de tu suscripción.</strong> AI Usage
+                    Monitor no consulta tu factura ni atribuye cargos adicionales. Los importes
+                    simulan este consumo con tarifas públicas.
+                  </div>
                   <details className="pricing-note reveal" style={{ marginTop: '20px' }}>
                     <summary>Cómo se calcula la estimación de costes</summary>
                     <p>
@@ -1443,6 +1498,7 @@ function App() {
                 </>
               ) : tab === 'sources' ? (
                 <>
+                  <StatsRow data={data} />
                   <SourcesPanel sources={sources} reconciliation={reconciliation} agent={agent} />
                   <details className="pricing-note reveal" style={{ marginTop: '20px' }}>
                     <summary>Cómo se calcula la estimación de costes</summary>
@@ -1453,12 +1509,15 @@ function App() {
                   </details>
                 </>
               ) : (
-                <HistoryPanel
-                  history={history}
-                  agent={agent}
-                  offset={offset}
-                  setOffset={setOffset}
-                />
+                <>
+                  <StatsRow data={data} />
+                  <HistoryPanel
+                    history={history}
+                    agent={agent}
+                    offset={offset}
+                    setOffset={setOffset}
+                  />
+                </>
               )}
               <footer>
                 <div>

@@ -1690,20 +1690,34 @@ html {
 .reveal.in {
   animation: rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
 }
+/* Fluid number animations (blocks stay stable; numbers animate) */
+.animated-number {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  transition: color 0.15s ease;
+}
+@keyframes numTick {
+  0% {
+    transform: scale(1.06);
+    filter: brightness(1.2);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+.number-tick {
+  animation: numTick 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .number-tick {
+    animation: none !important;
+  }
+}
 .stat {
-  animation: rise 0.4s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
-}
-.stat:nth-child(2) {
-  animation-delay: 40ms;
-}
-.stat:nth-child(3) {
-  animation-delay: 80ms;
-}
-.stat:nth-child(4) {
-  animation-delay: 120ms;
-}
-.agent-card {
-  animation: rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) backwards;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
 }
 .live:not(.offline) i {
   animation: pulse-dot 2.2s ease-in-out infinite;
@@ -1751,17 +1765,22 @@ nav button.active::before {
   border-radius: 2px;
 }
 
-/* Live Telemetry Card */
+/* Live Telemetry Bar */
+.live-telemetry-bar,
 .live-telemetry {
   background: linear-gradient(145deg, #101915 0%, #0d1411 100%);
   border: 1px solid #23332a;
   border-radius: 12px;
-  padding: 20px;
+  padding: 16px 20px;
   margin-bottom: 24px;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
+.live-telemetry-bar::after,
 .live-telemetry::after {
   content: '';
   position: absolute;
@@ -1771,13 +1790,12 @@ nav button.active::before {
   height: 2px;
   background: linear-gradient(90deg, transparent, #a5edc6, transparent);
 }
-.telemetry-header {
+.telemetry-bar-main {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 18px;
 }
 .telemetry-title {
   display: flex;
@@ -1786,7 +1804,7 @@ nav button.active::before {
 }
 .telemetry-title h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: #ecf6ef;
 }
@@ -1872,58 +1890,48 @@ nav button.active::before {
   color: #a5cced;
 }
 
-/* Telemetry Grid & KPIs */
-.telemetry-grid {
+/* Telemetry KPIs */
+.telemetry-bar-kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 14px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #1c2922;
 }
-.telemetry-kpi {
+.telemetry-kpi-item {
   background: #141f1a;
-  border: 1px solid #223229;
-  border-radius: 9px;
+  border: 1px solid #203027;
+  border-radius: 8px;
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  transition:
-    transform 0.15s ease,
-    border-color 0.15s ease;
+  gap: 5px;
+  transition: border-color 0.15s ease;
 }
-.telemetry-kpi:hover {
-  border-color: #2e4738;
+.telemetry-kpi-item:hover {
+  border-color: #2b4234;
 }
-.kpi-label {
+.telemetry-kpi-item .kpi-label {
   font-size: 11px;
   font-weight: 500;
-  color: #96aba0;
+  color: #8fa599;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.kpi-value-row {
+.telemetry-kpi-item .kpi-val {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
 }
-.kpi-num {
+.telemetry-kpi-item .kpi-num {
   font-size: 22px;
   font-weight: 700;
   color: #ecf6ef;
   letter-spacing: -0.5px;
 }
-.kpi-unit {
+.telemetry-kpi-item small {
   font-size: 11px;
   color: #82958a;
-}
-.kpi-subnum {
-  font-size: 11px;
-  color: #a3b5ab;
-}
-.kpi-hint {
-  font-size: 10px;
-  color: #809688;
 }
 .mini-progress-bar {
   height: 4px;
@@ -1942,15 +1950,6 @@ nav button.active::before {
 }
 .violet-fill {
   background: #b59add;
-}
-.telemetry-stream-sparkline {
-  margin-top: 8px;
-  border-top: 1px solid #1b2620;
-  padding-top: 12px;
-}
-.telemetry-stream-sparkline .agent-sparkline {
-  height: 40px;
-  width: 100%;
 }
 
 /* Tab Transitions */

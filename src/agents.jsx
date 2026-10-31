@@ -1,4 +1,73 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+
+export function AnimatedNumber({ value, format = (v) => v, duration = 500, className = '' }) {
+  const numericTarget =
+    value == null
+      ? 0
+      : typeof value === 'bigint'
+        ? Number(value)
+        : typeof value === 'number'
+          ? value
+          : Number(value) || 0;
+
+  const [displayValue, setDisplayValue] = useState(numericTarget);
+  const prevValueRef = useRef(numericTarget);
+  const animFrameRef = useRef(null);
+  const [isTick, setIsTick] = useState(false);
+
+  useEffect(() => {
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+
+    const start = prevValueRef.current;
+    const end = numericTarget;
+    prevValueRef.current = end;
+
+    if (prefersReducedMotion || start === end || isNaN(end)) {
+      setDisplayValue(end);
+      return;
+    }
+
+    setIsTick(true);
+    const tickTimer = setTimeout(() => setIsTick(false), 260);
+
+    const startTime = performance.now();
+    const diff = end - start;
+
+    const animate = (now) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const current = start + diff * ease;
+
+      setDisplayValue(current);
+
+      if (progress < 1) {
+        animFrameRef.current = requestAnimationFrame(animate);
+      } else {
+        setDisplayValue(end);
+      }
+    };
+
+    animFrameRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      clearTimeout(tickTimer);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [numericTarget, duration]);
+
+  if (value == null) {
+    return <span className={`animated-number ${className}`}>{format(null)}</span>;
+  }
+
+  return (
+    <span className={`animated-number ${isTick ? 'number-tick' : ''} ${className}`}>
+      {format(displayValue)}
+    </span>
+  );
+}
 
 // Agent identity comes from the declarative catalogue served by /api/sources;
 // configured agents stay reachable with zero usage, and unknown names from
@@ -58,10 +127,12 @@ export function AgentNavigation({ agents, selected, onSelect }) {
     </nav>
   );
 }
-const exact = (value) => {
+export const exact = (value) => {
   if (value == null || value === '') return '0';
   try {
-    return BigInt(value).toLocaleString('es-ES');
+    if (typeof value === 'bigint') return value.toLocaleString('es-ES');
+    const n = Math.round(Number(value));
+    return isNaN(n) ? String(value) : BigInt(n).toLocaleString('es-ES');
   } catch {
     return String(value);
   }
@@ -160,7 +231,6 @@ export function AgentSections({ agents, data, sources, onSelect, connected, sele
                 type="button"
                 className={`agent-card agent-${agent.tone}`}
                 key={agent.name}
-                style={{ animationDelay: `${Math.min(index, 7) * 60}ms` }}
                 onClick={() => onSelect(agent.name)}
                 aria-label={`Abrir apartado de ${agent.name}`}
               >
@@ -179,28 +249,39 @@ export function AgentSections({ agents, data, sources, onSelect, connected, sele
                   <span>
                     <small>Tokens</small>
                     <strong title={exact(metrics?.totalTokens)}>
-                      {compact(metrics?.totalTokens)}
+                      <AnimatedNumber value={metrics?.totalTokens} format={compact} />
                     </strong>
                   </span>
                   <span>
                     <small>Respuestas</small>
-                    <strong>{metrics?.count ?? 0}</strong>
+                    <strong>
+                      <AnimatedNumber
+                        value={metrics?.count ?? 0}
+                        format={(v) => Math.round(v).toLocaleString('es-ES')}
+                      />
+                    </strong>
                   </span>
                   <span>
                     <small>Equivalente API</small>
                     <strong>
-                      {!metrics?.count
-                        ? '—'
-                        : metrics.count === metrics.unpriced
-                          ? 'Sin estimar'
-                          : money(metrics.costUsd)}
+                      {!metrics?.count ? (
+                        '—'
+                      ) : metrics.count === metrics.unpriced ? (
+                        'Sin estimar'
+                      ) : (
+                        <AnimatedNumber value={metrics.costUsd} format={money} />
+                      )}
                     </strong>
                   </span>
                 </span>
                 <Sparkline buckets={metrics?.buckets} />
                 <span className="agent-card-tokens">
-                  <span>↓ {exact(metrics?.inputTokens)} entrada</span>
-                  <span>↑ {exact(metrics?.outputTokens)} salida</span>
+                  <span>
+                    ↓ <AnimatedNumber value={metrics?.inputTokens} format={exact} /> entrada
+                  </span>
+                  <span>
+                    ↑ <AnimatedNumber value={metrics?.outputTokens} format={exact} /> salida
+                  </span>
                 </span>
                 <span className="agent-card-foot">
                   {metrics?.lastEventAt
@@ -249,7 +330,7 @@ export function AgentStatus({ agent, data, source, connected }) {
     </section>
   );
 }
-export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
+export function LiveTelemetry({ agent, metrics, source, connected }) {
   const buckets = metrics?.buckets || [];
   const latestBucket = buckets.length ? buckets[buckets.length - 1] : null;
   const currentTokens = latestBucket
@@ -273,11 +354,11 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
   );
 
   return (
-    <section
-      className={`live-telemetry agent-${agent?.tone || 'mint'} reveal`}
+    <div
+      className={`live-telemetry-bar agent-${agent?.tone || 'mint'}`}
       aria-labelledby="telemetry-heading"
     >
-      <div className="telemetry-header">
+      <div className="telemetry-bar-main">
         <div className="telemetry-title">
           <div className={`telemetry-heartbeat ${isStreaming ? 'beating' : ''}`}>
             <svg viewBox="0 0 40 24" className="ecg-line" aria-hidden="true">
@@ -286,9 +367,9 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
             <span className="live-dot" aria-hidden="true" />
           </div>
           <div>
-            <h3 id="telemetry-heading">Telemetría en Tiempo Real</h3>
+            <h3 id="telemetry-heading">Telemetría en tiempo real</h3>
             <span className="telemetry-sub">
-              {isStreaming ? 'Monitoreo activo de turnos y velocidad' : status.label}
+              {isStreaming ? 'Monitoreo activo de velocidad y turnos' : status.label}
             </span>
           </div>
         </div>
@@ -301,20 +382,23 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
           </span>
         </div>
       </div>
-      <div className="telemetry-grid">
-        <div className="telemetry-kpi">
+      <div className="telemetry-bar-kpis">
+        <div className="telemetry-kpi-item">
           <span className="kpi-label">Velocidad</span>
-          <div className="kpi-value-row">
-            <strong className="kpi-num animate-num">{speed.toLocaleString('es-ES')}</strong>
-            <small className="kpi-unit">tokens / s</small>
+          <div className="kpi-val">
+            <strong className="kpi-num">
+              <AnimatedNumber value={speed} format={(v) => Math.round(v).toLocaleString('es-ES')} />
+            </strong>
+            <small>tokens / s</small>
           </div>
-          <span className="kpi-hint">Ritmo estimado en la ventana activa</span>
         </div>
-        <div className="telemetry-kpi">
-          <span className="kpi-label">Entrada & Caché</span>
-          <div className="kpi-value-row">
-            <strong className="kpi-num mint-text">{compact(metrics?.inputTokens)}</strong>
-            <small className="kpi-subnum">⚡ {compact(metrics?.cachedInputTokens)} en caché</small>
+        <div className="telemetry-kpi-item">
+          <span className="kpi-label">Eficiencia de Caché</span>
+          <div className="kpi-val">
+            <strong className="kpi-num mint-text">
+              <AnimatedNumber value={cachedRatio} format={(v) => `${Math.round(v)}%`} />
+            </strong>
+            <small>de entrada en caché</small>
           </div>
           <div
             className="mini-progress-bar"
@@ -324,21 +408,16 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
             aria-valuemax={100}
             aria-label="Porcentaje de entrada en caché"
           >
-            <div
-              className="bar-fill mint-fill"
-              style={{
-                width: `${cachedRatio}%`,
-              }}
-            />
+            <div className="bar-fill mint-fill" style={{ width: `${cachedRatio}%` }} />
           </div>
         </div>
-        <div className="telemetry-kpi">
-          <span className="kpi-label">Salida & Razonamiento</span>
-          <div className="kpi-value-row">
-            <strong className="kpi-num violet-text">{compact(metrics?.outputTokens)}</strong>
-            <small className="kpi-subnum">
-              🧠 {compact(metrics?.reasoningOutputTokens)} razonamiento
-            </small>
+        <div className="telemetry-kpi-item">
+          <span className="kpi-label">Razonamiento</span>
+          <div className="kpi-val">
+            <strong className="kpi-num violet-text">
+              <AnimatedNumber value={reasoningRatio} format={(v) => `${Math.round(v)}%`} />
+            </strong>
+            <small>de salida en razonamiento</small>
           </div>
           <div
             className="mini-progress-bar"
@@ -348,32 +427,10 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
             aria-valuemax={100}
             aria-label="Porcentaje de razonamiento"
           >
-            <div
-              className="bar-fill violet-fill"
-              style={{
-                width: `${reasoningRatio}%`,
-              }}
-            />
+            <div className="bar-fill violet-fill" style={{ width: `${reasoningRatio}%` }} />
           </div>
         </div>
-        <div className="telemetry-kpi">
-          <span className="kpi-label">Respuestas & Coste Est.</span>
-          <div className="kpi-value-row">
-            <strong className="kpi-num">{metrics?.count ?? 0}</strong>
-            <small className="kpi-subnum">
-              {metrics?.costUsd ? money(metrics.costUsd) : 'Sin estimar'}
-            </small>
-          </div>
-          <span className="kpi-hint">
-            {metrics?.lastEventAt
-              ? `Última: ${date(metrics.lastEventAt)}`
-              : 'Sin actividad en este periodo'}
-          </span>
-        </div>
       </div>
-      <div className="telemetry-stream-sparkline">
-        <Sparkline buckets={buckets} />
-      </div>
-    </section>
+    </div>
   );
 }
