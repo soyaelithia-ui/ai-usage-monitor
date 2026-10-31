@@ -596,7 +596,7 @@ const setStored = (key, val) => {
 const isMobileViewport = () => {
   if (typeof globalThis === 'undefined') return false;
   const win = globalThis.window || globalThis;
-  return typeof win.innerWidth === 'number' && win.innerWidth <= 900;
+  return typeof win.innerWidth === 'number' && win.innerWidth >= 280 && win.innerWidth <= 900;
 };
 
 const isDesktopViewport = () => {
@@ -1130,9 +1130,13 @@ function App() {
   useEffect(() => {
     let wasMobile = isMobileViewport();
     const handleResize = () => {
+      const win = globalThis.window || globalThis;
+      if (typeof win.innerWidth !== 'number' || win.innerWidth < 280) return;
       const isMobile = isMobileViewport();
       if (isMobile && !wasMobile) {
         setSidebarOpen(false);
+      } else if (!isMobile && wasMobile) {
+        setSidebarOpen(getStored('sidebar', 'true') === 'true');
       }
       wasMobile = isMobile;
     };
