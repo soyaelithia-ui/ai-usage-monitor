@@ -1284,7 +1284,16 @@ aside {
 }
 .agent-navigation button {
   gap: 10px;
-  padding: 9px 12px;
+  padding: 8px 12px;
+  width: 100%;
+}
+.agent-nav-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
 }
 .agent-mark {
   width: 30px;
@@ -1299,6 +1308,12 @@ aside {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0;
+}
+.agent-mark svg,
+.agent-svg-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 .agent-mint {
   --agent-color: #b5edcd;
@@ -1320,11 +1335,25 @@ aside {
   --agent-bg: #342d1e;
   --agent-border: #5a4d32;
 }
+.agent-rose {
+  --agent-color: #f7a8b8;
+  --agent-bg: #381e28;
+  --agent-border: #643748;
+}
+.agent-cyan {
+  --agent-color: #9fe7e5;
+  --agent-bg: #1c3538;
+  --agent-border: #325a5f;
+}
 .agent-navigation .agent-mark {
-  width: 25px;
-  height: 25px;
+  width: 26px;
+  height: 26px;
   border-radius: 7px;
   font-size: 10px;
+}
+.agent-navigation .agent-mark svg {
+  width: 14px;
+  height: 14px;
 }
 .agent-navigation .active .agent-nav-name {
   color: #e1f2e7;

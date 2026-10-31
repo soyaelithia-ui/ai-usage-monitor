@@ -4,6 +4,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { normalize, estimate, Decimal, pricingNote } from './usage.js';
 import { provenance, observe } from './provenance.js';
+import { agents } from './catalog.js';
 export const hash = (s) => createHash('sha256').update(s).digest('hex');
 export const secret = () => randomBytes(32).toString('base64url');
 export function openDb(path, now = Date.now()) {
@@ -73,6 +74,41 @@ export function insertEvent(db, input) {
       );
     }
     return 'duplicate';
+  }
+  if (e.agent && typeof e.agent === 'string') {
+    const agentName = e.agent.trim().slice(0, 100);
+    if (agentName) {
+      const agentId =
+        agentName
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, '-')
+          .replace(/^-+|-+$/g, '') || 'custom';
+      try {
+        const isDynamic = db
+          .prepare('SELECT 1 FROM dynamic_agents WHERE name=? OR id=?')
+          .get(agentName, agentId);
+        if (
+          !isDynamic &&
+          !agents.some(
+            (a) => a.name.toLowerCase() === agentName.toLowerCase() || a.id === agentId,
+          )
+        ) {
+          const tones = ['mint', 'blue', 'violet', 'amber', 'rose', 'cyan'];
+          const hashVal = [...agentName].reduce((acc, c) => acc + c.charCodeAt(0), 0);
+          const tone = tones[hashVal % tones.length];
+          const symbol = agentName.slice(0, 1).toUpperCase();
+          insertDynamicAgent(db, {
+            id: agentId,
+            name: agentName,
+            reader: 'contract',
+            provider: e.provider || 'custom',
+            tone,
+            symbol,
+            created_at: Date.now(),
+          });
+        }
+      } catch {}
+    }
   }
   db.prepare(
     'INSERT INTO events(identity,fingerprint,occurred_at,agent,model,data) VALUES (?,?,?,?,?,?)',

@@ -98,7 +98,8 @@ try {
     .getByText('Equivalencia de API, no gasto de tu suscripción.', { exact: true })
     .waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+  assert.equal(await page.evaluate(() => localStorage.getItem('token') || sessionStorage.getItem('token')), null);
+  assert.equal(await page.evaluate(() => localStorage.getItem('pulse_ui_window')), '24h');
   mkdirSync('test-results', { recursive: true });
   await page.screenshot({ path: 'test-results/production-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -107,6 +108,10 @@ try {
   assert.deepEqual(errors, []);
   const agentChecks = [];
   for (const name of ['Codex', 'Antigravity', 'OpenCode']) {
+    const toggle = page.getByRole('button', { name: 'Mostrar barra lateral', exact: true });
+    if (await toggle.isVisible()) {
+      await toggle.click();
+    }
     await page.getByRole('button', { name: `Apartado ${name}`, exact: true }).click();
     await page.getByRole('heading', { name: `${name}, en tiempo real.`, exact: true }).waitFor();
     await page.getByRole('region', { name: `Estado de ${name}`, exact: true }).waitFor();

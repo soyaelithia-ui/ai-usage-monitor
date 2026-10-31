@@ -207,3 +207,25 @@ test('dynamic agents register via API and auto-register via contract ingestion',
     db.close();
   }
 });
+
+test('unseen agents in incoming events auto-register dynamically', () => {
+  const db = openDb(':memory:');
+  insertEvent(db, {
+    source: 'custom-scanner',
+    provider: 'anthropic',
+    agent: 'Claude Worker',
+    model: 'claude-3-7-sonnet',
+    responseId: 'test-auto-reg-1',
+    occurredAt: new Date().toISOString(),
+    inputTokens: '500',
+    outputTokens: '120',
+  });
+  const dyn = getDynamicAgents(db);
+  const found = dyn.find((a) => a.name === 'Claude Worker');
+  assert.ok(found, 'Claude Worker should be auto-registered in dynamic_agents');
+  assert.equal(found.id, 'claude-worker');
+  assert.equal(found.provider, 'anthropic');
+  assert.ok(found.tone);
+  assert.equal(found.symbol, 'C');
+  db.close();
+});

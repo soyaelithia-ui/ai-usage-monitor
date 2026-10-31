@@ -91,7 +91,7 @@ export function sourceState(source) {
     state: source.state,
     label:
       {
-        running: 'Lectura activa · cada 2 s',
+        running: 'Lectura activa · tiempo real',
         waiting: 'Esperando registros',
         unsupported: 'Formato pendiente de verificar',
         error: 'Error de lectura',
@@ -100,10 +100,93 @@ export function sourceState(source) {
       }[source.state] ?? 'Sin información de la fuente',
   };
 }
+
+export function CodexIcon({ className = '', size = 16 }) {
+  return (
+    <svg
+      className={`agent-svg-icon ${className}`}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M22.28 10.45a5.55 5.55 0 0 0-.47-4.49 5.7 5.7 0 0 0-4.04-2.77 5.78 5.78 0 0 0-5.18 1.15A5.67 5.67 0 0 0 8.35 3.5 5.75 5.75 0 0 0 4.1 6.13a5.58 5.58 0 0 0-.91 4.43 5.68 5.68 0 0 0 1.25 4.88 5.64 5.64 0 0 0 .47 4.49 5.72 5.72 0 0 0 4.04 2.77 5.8 5.8 0 0 0 5.18-1.15 5.67 5.67 0 0 0 4.24.84 5.74 5.74 0 0 0 4.25-2.63 5.59 5.59 0 0 0 .91-4.43 5.7 5.7 0 0 0-1.25-4.88zm-8.87 9.87a4.2 4.2 0 0 1-2.48-.48l3.65-2.11a.75.75 0 0 0 .38-.65v-5.17l1.55.9a.7.7 0 0 1 .37.64v4.38a4.23 4.23 0 0 1-3.47 2.49zm-8.4-4.86a4.13 4.13 0 0 1-.48-2.47l3.65 2.11a.75.75 0 0 0 .75 0l4.48-2.59v1.79a.74.74 0 0 1-.37.65l-3.8 2.19a4.23 4.23 0 0 1-4.23-1.68zm-1.05-8.4a4.17 4.17 0 0 1 2-2l3.65 2.11a.75.75 0 0 0 .37.65v5.17l-1.55-.9a.74.74 0 0 1-.37-.65V7.95a4.23 4.23 0 0 1-4.1-1.89zm14.73 3.65-4.48 2.59v-1.79a.75.75 0 0 1 .37-.65l3.8-2.19a4.23 4.23 0 0 1 4.23 1.68 4.15 4.15 0 0 1 .48 2.47l-3.65-2.11a.75.75 0 0 0-.75 0zm2.25 4.41a4.17 4.17 0 0 1-2 2l-3.65-2.11a.75.75 0 0 0-.37-.65V9.11l1.55.9a.75.75 0 0 1 .37.65v4.38a4.21 4.21 0 0 1 .1 1.08zm-9.52-1.92 2-1.15 2 1.15v2.31l-2 1.16-2-1.16v-2.31z" />
+    </svg>
+  );
+}
+
+export function OpenCodeIcon({ className = '', size = 16 }) {
+  return (
+    <svg
+      className={`agent-svg-icon ${className}`}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M3 4a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4zm3 2v12h12V6H6zm2 2h8v8H8V8z"
+      />
+    </svg>
+  );
+}
+
+export function AntigravityIcon({ className = '', size = 16 }) {
+  return (
+    <svg
+      className={`agent-svg-icon ${className}`}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <path d="M19.94 20.59c1.09.82 2.73.27 1.23-1.23C16.67 15 17.62 3 12.03 3S7.39 15 2.89 19.36c-1.64 1.64.14 2.05 1.23 1.23c4.23-2.86 3.95-7.91 7.91-7.91s3.68 5.05 7.91 7.91z" />
+      <circle cx="12" cy="7.5" r="2.2" />
+    </svg>
+  );
+}
+
+export function GenericAgentIcon({ className = '', size = 16 }) {
+  return (
+    <svg
+      className={`agent-svg-icon ${className}`}
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="4" y="6" width="16" height="14" rx="3" fill="currentColor" fillOpacity="0.15" />
+      <circle cx="9" cy="12" r="1.5" fill="currentColor" />
+      <circle cx="15" cy="12" r="1.5" fill="currentColor" />
+      <path d="M9 16h6" />
+      <line x1="12" y1="2" x2="12" y2="6" />
+      <circle cx="12" cy="2" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function AgentIcon({ agent, size = 16 }) {
+  const name = (agent?.name || agent?.id || '').toLowerCase();
+  if (name.includes('codex')) return <CodexIcon size={size} />;
+  if (name.includes('opencode')) return <OpenCodeIcon size={size} />;
+  if (name.includes('antigravity')) return <AntigravityIcon size={size} />;
+  return <GenericAgentIcon size={size} />;
+}
+
 export function AgentMark({ agent }) {
   return (
     <span className={`agent-mark agent-${agent?.tone || 'mint'}`} aria-hidden="true">
-      {agent?.symbol || (agent?.name ? agent.name.slice(0, 1).toUpperCase() : '◈')}
+      <AgentIcon agent={agent} />
     </span>
   );
 }

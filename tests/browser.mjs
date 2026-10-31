@@ -203,6 +203,9 @@ try {
     mkdirSync('test-results', { recursive: true });
     await page.screenshot({ path: `test-results/${name}.png`, fullPage: true });
     // Every agent section remains reachable on mobile and keeps its charts scoped.
+    if (name === 'mobile') {
+      await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
+    }
     await page.getByRole('button', { name: 'Apartado Antigravity', exact: true }).click();
     await page
       .getByRole('heading', { name: 'Antigravity, en tiempo real.', exact: true })
@@ -217,6 +220,9 @@ try {
       `${name} agent section overflow`,
     );
     await page.screenshot({ path: `test-results/${name}-antigravity.png`, fullPage: true });
+    if (name === 'mobile') {
+      await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
+    }
     await page.getByRole('button', { name: 'Vista general', exact: true }).click();
     await page.getByText('156 respuestas en esta selección', { exact: true }).waitFor();
     // Off-canvas collapsible sidebar: collapse to make the web cleaner, expand on demand.
@@ -246,17 +252,22 @@ try {
       );
       await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
     } else {
-      await page.getByRole('button', { name: 'Cerrar barra lateral', exact: true }).click();
       assert.equal(
         await page.evaluate(() => document.querySelector('aside').classList.contains('collapsed')),
         true,
-        'mobile sidebar collapsed offcanvas',
+        'mobile sidebar starts closed by default',
       );
       await page.getByRole('button', { name: 'Mostrar barra lateral', exact: true }).click();
       assert.equal(
         await page.evaluate(() => document.querySelector('aside').classList.contains('open')),
         true,
         'mobile sidebar opened via toggle button',
+      );
+      await page.getByRole('button', { name: 'Cerrar barra lateral', exact: true }).click();
+      assert.equal(
+        await page.evaluate(() => document.querySelector('aside').classList.contains('collapsed')),
+        true,
+        'mobile sidebar closed offcanvas',
       );
     }
     // External navigation with a Strict cookie must restore the existing session.
@@ -265,7 +276,12 @@ try {
     await page.waitForURL(c.origin + '/');
     await page.getByText('156 respuestas en esta selección', { exact: true }).waitFor();
     // A session can survive reload without any browser storage credentials.
-    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem('token') || sessionStorage.getItem('token')),
+      null,
+    );
+    // UI state persists across reload
+    assert.equal(await page.evaluate(() => localStorage.getItem('pulse_ui_tab')), 'overview');
     await page.reload();
     await page.getByText('156 respuestas en esta selección', { exact: true }).waitFor();
     if (name === 'desktop') {

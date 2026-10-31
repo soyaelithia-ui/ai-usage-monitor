@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, watch } from 'node:fs';
 import { join } from 'node:path';
 import JSONbig from 'json-bigint';
 import { insertEvent, recordError, hash, getDynamicAgents } from './db.js';
@@ -238,12 +238,41 @@ export class Sources {
     }
     if (this.changed) this.onChange();
   }
+  setupWatchers() {
+    this.closeWatchers();
+    this.watchers = [];
+    for (const p of Object.values(this.paths || {})) {
+      if (p && existsSync(p)) {
+        try {
+          const w = watch(p, () => {
+            clearTimeout(this.watchDebounce);
+            this.watchDebounce = setTimeout(() => this.scan(), 50);
+          });
+          w.on('error', () => {});
+          this.watchers.push(w);
+        } catch {}
+      }
+    }
+  }
+  closeWatchers() {
+    clearTimeout(this.watchDebounce);
+    if (this.watchers) {
+      for (const w of this.watchers) {
+        try {
+          w.close();
+        } catch {}
+      }
+      this.watchers = [];
+    }
+  }
   start() {
     this.scan();
-    this.timer = setInterval(() => this.scan(), 2000);
+    this.setupWatchers();
+    this.timer = setInterval(() => this.scan(), 1000);
     return this;
   }
   stop() {
     clearInterval(this.timer);
+    this.closeWatchers();
   }
 }

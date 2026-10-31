@@ -1,4 +1,4 @@
-import { readdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
+import { readdirSync, statSync, openSync, readSync, closeSync, watch, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import JSONbig from 'json-bigint';
 import { hash, insertEvent, recordError } from './db.js';
@@ -181,10 +181,26 @@ export class Collector {
         .immediate();
     }
     this.scan();
-    this.timer = setInterval(() => this.scan(), 2000);
+    if (this.root && existsSync(this.root)) {
+      try {
+        this.watcher = watch(this.root, { recursive: true }, () => {
+          clearTimeout(this.watchDebounce);
+          this.watchDebounce = setTimeout(() => this.scan(), 50);
+        });
+        this.watcher.on('error', () => {});
+      } catch {}
+    }
+    this.timer = setInterval(() => this.scan(), 1000);
     return this;
   }
   stop() {
     clearInterval(this.timer);
+    clearTimeout(this.watchDebounce);
+    if (this.watcher) {
+      try {
+        this.watcher.close();
+      } catch {}
+      this.watcher = null;
+    }
   }
 }

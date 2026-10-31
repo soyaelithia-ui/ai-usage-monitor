@@ -545,9 +545,43 @@ function SourcesPanel({ sources, reconciliation, agent }) {
     </section>
   );
 }
+
+const getStored = (key, fallback) => {
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const val = localStorage.getItem('pulse_ui_' + key);
+    return val !== null ? val : fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const setStored = (key, val) => {
+  if (typeof window === 'undefined') return;
+  try {
+    if (val === undefined || val === null) {
+      localStorage.removeItem('pulse_ui_' + key);
+    } else {
+      localStorage.setItem('pulse_ui_' + key, String(val));
+    }
+  } catch {}
+};
+
+const isMobileViewport = () => {
+  if (typeof globalThis === 'undefined') return false;
+  const win = globalThis.window || globalThis;
+  return typeof win.innerWidth === 'number' && win.innerWidth <= 900;
+};
+
+const isDesktopViewport = () => {
+  if (typeof globalThis === 'undefined') return true;
+  const win = globalThis.window || globalThis;
+  return typeof win.innerWidth === 'number' && win.innerWidth > 900;
+};
+
 function HistoryPanel({ history, agent, offset, setOffset }) {
-  const [expanded, setExpanded] = useState(false);
-  const [viewMode, setViewMode] = useState('grouped');
+  const [expanded, setExpanded] = useState(() => getStored('history_expanded', 'false') === 'true');
+  const [viewMode, setViewMode] = useState(() => getStored('history_view_mode', 'grouped'));
   const [collapsedGroups, setCollapsedGroups] = useState({});
 
   const allEvents = history?.events || [];
@@ -664,11 +698,15 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
               role="radio"
               aria-checked={viewMode === 'grouped'}
               className={viewMode === 'grouped' ? 'active' : ''}
-              onClick={() => setViewMode('grouped')}
+              onClick={() => {
+                setViewMode('grouped');
+                setStored('history_view_mode', 'grouped');
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
                   e.preventDefault();
                   setViewMode('flat');
+                  setStored('history_view_mode', 'flat');
                 }
               }}
               title="Agrupar por Agente y modelo"
@@ -680,11 +718,15 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
               role="radio"
               aria-checked={viewMode === 'flat'}
               className={viewMode === 'flat' ? 'active' : ''}
-              onClick={() => setViewMode('flat')}
+              onClick={() => {
+                setViewMode('flat');
+                setStored('history_view_mode', 'flat');
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
                   e.preventDefault();
                   setViewMode('grouped');
+                  setStored('history_view_mode', 'grouped');
                 }
               }}
               title="Lista cronológica plana"
@@ -766,7 +808,13 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
           <button
             type="button"
             className="history-accordion-btn"
-            onClick={() => setExpanded((prev) => !prev)}
+            onClick={() => {
+              setExpanded((prev) => {
+                const next = !prev;
+                setStored('history_expanded', String(next));
+                return next;
+              });
+            }}
             aria-expanded={expanded}
           >
             <span className="accordion-chevron" aria-hidden="true">
@@ -900,22 +948,25 @@ function App() {
   const [session, setSession] = useState(null),
     [data, setData] = useState(null),
     [history, setHistory] = useState(null),
-    [window, setWindow] = useState('1h'),
-    [agent, setAgent] = useState(''),
-    [model, setModel] = useState(''),
-    [provider, setProvider] = useState(''),
-    [sessionId, setSessionId] = useState(''),
-    [method, setMethod] = useState(''),
+    [window, setWindow] = useState(() => getStored('window', '1h')),
+    [agent, setAgent] = useState(() => getStored('agent', '')),
+    [model, setModel] = useState(() => getStored('model', '')),
+    [provider, setProvider] = useState(() => getStored('provider', '')),
+    [sessionId, setSessionId] = useState(() => getStored('sessionId', '')),
+    [method, setMethod] = useState(() => getStored('method', '')),
     [sources, setSources] = useState(null),
     [reconciliation, setReconciliation] = useState(null),
     [offset, setOffset] = useState(0),
     [connection, setConnection] = useState('Conectando'),
     [error, setError] = useState(''),
     [clock, setClock] = useState(Date.now()),
-    [tab, setTab] = useState('overview'),
+    [tab, setTab] = useState(() => getStored('tab', 'overview')),
     [pulse, setPulse] = useState(0),
     [loadedQuery, setLoadedQuery] = useState(''),
-    [sidebarOpen, setSidebarOpen] = useState(true);
+    [sidebarOpen, setSidebarOpen] = useState(() => {
+      if (isMobileViewport()) return false;
+      return getStored('sidebar', 'true') === 'true';
+    });
   const ended = useRef(false),
     current = useRef({ window, agent, model, provider, sessionId, method, offset }),
     trigger = useRef(() => {}),
@@ -956,7 +1007,7 @@ function App() {
         dirty = true;
         return;
       }
-      const delay = 1000 - (Date.now() - last);
+      const delay = 80 - (Date.now() - last);
       if (delay > 0) {
         clearTimeout(timer);
         timer = setTimeout(refresh, delay);
@@ -1074,7 +1125,19 @@ function App() {
   const toggleButtonRef = useRef(null);
   const closeSidebar = () => {
     setSidebarOpen(false);
+    if (isDesktopViewport()) {
+      setStored('sidebar', 'false');
+    }
     toggleButtonRef.current?.focus();
+  };
+  const toggleSidebar = () => {
+    setSidebarOpen((prev) => {
+      const next = !prev;
+      if (isDesktopViewport()) {
+        setStored('sidebar', String(next));
+      }
+      return next;
+    });
   };
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -1085,9 +1148,10 @@ function App() {
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [sidebarOpen]);
-  const change = (setter, v) => {
+  const change = (setter, v, key) => {
     setOffset(0);
     setter(v);
+    if (key) setStored(key, v);
   };
   const logout = async () => {
     try {
@@ -1102,6 +1166,15 @@ function App() {
       setError('No se pudo cerrar la sesión. Reintenta cuando haya conexión.');
     }
   };
+  const selectTab = (t) => {
+    setAgent('');
+    setStored('agent', '');
+    setTab(t);
+    setStored('tab', t);
+    if (isMobileViewport()) {
+      closeSidebar();
+    }
+  };
   const selectAgent = (name) => {
     setAgent(name);
     setModel('');
@@ -1109,7 +1182,12 @@ function App() {
     setSessionId('');
     setMethod('');
     setOffset(0);
-    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+    setStored('agent', name);
+    setStored('model', '');
+    setStored('provider', '');
+    setStored('sessionId', '');
+    setStored('method', '');
+    if (isMobileViewport()) {
       closeSidebar();
     }
   };
@@ -1152,10 +1230,7 @@ function App() {
               type="button"
               aria-current={tab === 'overview' && !agent ? 'page' : undefined}
               className={tab === 'overview' && !agent ? 'active' : ''}
-              onClick={() => {
-                selectAgent('');
-                setTab('overview');
-              }}
+              onClick={() => selectTab('overview')}
             >
               <Icon type="grid" />
               Vista general
@@ -1164,10 +1239,7 @@ function App() {
               type="button"
               aria-current={tab === 'history' && !agent ? 'page' : undefined}
               className={tab === 'history' && !agent ? 'active' : ''}
-              onClick={() => {
-                selectAgent('');
-                setTab('history');
-              }}
+              onClick={() => selectTab('history')}
             >
               <span className="history-icon" aria-hidden="true">
                 ↺
@@ -1178,10 +1250,7 @@ function App() {
               type="button"
               aria-current={tab === 'sources' && !agent ? 'page' : undefined}
               className={tab === 'sources' && !agent ? 'active' : ''}
-              onClick={() => {
-                selectAgent('');
-                setTab('sources');
-              }}
+              onClick={() => selectTab('sources')}
             >
               <Icon type="sources" />
               Fuentes y precisión
@@ -1206,7 +1275,7 @@ function App() {
               ref={toggleButtonRef}
               type="button"
               className="sidebar-toggle"
-              onClick={() => setSidebarOpen((prev) => !prev)}
+              onClick={toggleSidebar}
               aria-label={sidebarOpen ? 'Ocultar barra lateral' : 'Mostrar barra lateral'}
               aria-expanded={sidebarOpen}
               aria-controls="app-sidebar"
@@ -1289,7 +1358,7 @@ function App() {
                   type="button"
                   aria-pressed={window === v}
                   className={window === v ? 'selected' : ''}
-                  onClick={() => change(setWindow, v)}
+                  onClick={() => change(setWindow, v, 'window')}
                 >
                   {l}
                 </button>
@@ -1314,7 +1383,7 @@ function App() {
                 <select
                   aria-label="Filtrar por modelo"
                   value={model}
-                  onChange={(e) => change(setModel, e.target.value)}
+                  onChange={(e) => change(setModel, e.target.value, 'model')}
                 >
                   <option value="">Todos los modelos</option>
                   {data?.options.models.map((x) => (
@@ -1327,7 +1396,7 @@ function App() {
                 <select
                   aria-label="Filtrar por proveedor"
                   value={provider}
-                  onChange={(e) => change(setProvider, e.target.value)}
+                  onChange={(e) => change(setProvider, e.target.value, 'provider')}
                 >
                   <option value="">Todos los proveedores</option>
                   {data?.options.providers?.map((x) => (
@@ -1340,7 +1409,7 @@ function App() {
                 <select
                   aria-label="Filtrar por sesión"
                   value={sessionId}
-                  onChange={(e) => change(setSessionId, e.target.value)}
+                  onChange={(e) => change(setSessionId, e.target.value, 'sessionId')}
                 >
                   <option value="">Todas las sesiones</option>
                   {data?.options.sessions?.map((x) => (
@@ -1355,7 +1424,7 @@ function App() {
                 <select
                   aria-label="Filtrar por método"
                   value={method}
-                  onChange={(e) => change(setMethod, e.target.value)}
+                  onChange={(e) => change(setMethod, e.target.value, 'method')}
                 >
                   <option value="">Todos los métodos</option>
                   {data?.options.methods?.map((x) => (
