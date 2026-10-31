@@ -32,6 +32,9 @@ export function security(req, res, next) {
     'Referrer-Policy': 'no-referrer',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
     'Strict-Transport-Security': 'max-age=31536000',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'X-DNS-Prefetch-Control': 'off',
   });
   next();
 }
@@ -93,20 +96,30 @@ export function createApp({
     try {
       let input;
       if (req.body?.schema === 'usage-monitor.usage.v1') {
-        const sourceId = req.body.source || 'custom';
+        const sourceId =
+          typeof req.body.source === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(req.body.source)
+            ? req.body.source
+            : 'custom';
         const dynamicAgents = getDynamicAgents(db);
         let agentDef =
           dynamicAgents.find((a) => a.id === sourceId) || agents.find((a) => a.id === sourceId);
         if (!agentDef && sourceId) {
-          const name = req.body.agent || sourceId.slice(0, 1).toUpperCase() + sourceId.slice(1);
+          const name =
+            typeof req.body.agent === 'string' && req.body.agent.trim()
+              ? req.body.agent.trim().slice(0, 100)
+              : sourceId.slice(0, 1).toUpperCase() + sourceId.slice(1);
+          const provider =
+            typeof req.body.provider === 'string' && req.body.provider.trim()
+              ? req.body.provider.trim().slice(0, 64)
+              : 'custom';
           insertDynamicAgent(db, {
             id: sourceId,
             name,
             reader: 'contract',
-            provider: req.body.provider || 'custom',
+            provider,
             created_at: Date.now(),
           });
-          agentDef = { id: sourceId, name, reader: 'contract', provider: req.body.provider };
+          agentDef = { id: sourceId, name, reader: 'contract', provider };
         }
         input = contractMessage(req.body, agentDef);
       } else {
@@ -123,31 +136,54 @@ export function createApp({
     const isDirect = equal(req.headers.authorization, `Bearer ${ingestKey}`);
     const isGateway = equal(req.headers['x-usage-monitor-gateway'], gatewayKey);
     if (!isDirect && !isGateway) return res.status(403).json({ error: 'Autorización requerida' });
-    const { id, name, reader, provider, tone, symbol, config, rates } = req.body || {};
-    if (!id || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) {
-      return res.status(400).json({ error: 'Identificador de agente inválido' });
-    }
-    const cleanReader = ['contract', 'sqlite', 'jsonl'].includes(reader) ? reader : 'contract';
-    const cleanName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 100) : id;
-    insertDynamicAgent(db, {
-      id,
-      name: cleanName,
-      reader: cleanReader,
-      provider: provider || 'custom',
-      tone: tone || null,
-      symbol: symbol || null,
-      config: config || {},
-      created_at: Date.now(),
-    });
-    if (rates && typeof rates === 'object') {
-      for (const [model, p] of Object.entries(rates)) {
-        if (p && p.input && p.output) {
-          setDynamicPricing(db, { model, ...p });
+    try {
+      const { id, name, reader, provider, tone, symbol, config, rates } = req.body || {};
+      if (!id || typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(id)) {
+        return res.status(400).json({ error: 'Identificador de agente inválido' });
+      }
+      const cleanReader = ['contract', 'sqlite', 'jsonl'].includes(reader) ? reader : 'contract';
+      const cleanName = typeof name === 'string' && name.trim() ? name.trim().slice(0, 100) : id;
+      const cleanProvider =
+        typeof provider === 'string' && provider.trim() ? provider.trim().slice(0, 64) : 'custom';
+      const cleanTone = ['mint', 'violet', 'blue', 'amber'].includes(tone) ? tone : null;
+      const cleanSymbol =
+        typeof symbol === 'string' && symbol.trim() ? symbol.trim().slice(0, 4) : null;
+      const cleanConfig =
+        config && typeof config === 'object' && !Array.isArray(config) ? config : {};
+      insertDynamicAgent(db, {
+        id,
+        name: cleanName,
+        reader: cleanReader,
+        provider: cleanProvider,
+        tone: cleanTone,
+        symbol: cleanSymbol,
+        config: cleanConfig,
+        created_at: Date.now(),
+      });
+      if (rates && typeof rates === 'object' && !Array.isArray(rates)) {
+        for (const [model, p] of Object.entries(rates)) {
+          if (
+            typeof model === 'string' &&
+            model.length > 0 &&
+            model.length <= 128 &&
+            model !== '__proto__' &&
+            model !== 'constructor' &&
+            model !== 'prototype' &&
+            p &&
+            typeof p === 'object' &&
+            !Array.isArray(p) &&
+            p.input &&
+            p.output
+          ) {
+            setDynamicPricing(db, { model, provider: p.provider || cleanProvider, ...p });
+          }
         }
       }
+      broadcast();
+      res.json({ ok: true, agent: { id, name: cleanName, reader: cleanReader } });
+    } catch {
+      res.status(400).json({ error: 'Datos de registro inválidos' });
     }
-    broadcast();
-    res.json({ ok: true, agent: { id, name: cleanName, reader: cleanReader } });
   });
   app.use((req, res, next) => {
     if (!equal(req.headers['x-usage-monitor-gateway'], gatewayKey))
@@ -285,7 +321,7 @@ export function createApp({
   });
   app.get('/api/discovery', (_req, res) => {
     try {
-      const technologies = discoverLocalTechnologies(process.env);
+      const technologies = discoverLocalTechnologies(process.env, sources?.paths ?? {});
       res.json({ technologies });
     } catch {
       res.json({ technologies: [] });

@@ -8,7 +8,48 @@ import {
   AgentStatus,
   LiveTelemetry,
 } from './agents.jsx';
-const exact = (x) => (x == null ? 'No disponible' : BigInt(x).toLocaleString('es-ES'));
+const exact = (x) => {
+  if (x == null || x === '') return 'No disponible';
+  try {
+    return BigInt(x).toLocaleString('es-ES');
+  } catch {
+    return String(x);
+  }
+};
+export class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error('ErrorBoundary caught an error:', error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="empty" style={{ padding: '60px 20px', textAlign: 'center' }}>
+          <Icon />
+          <h3>Ha ocurrido un error al cargar la vista</h3>
+          <p style={{ maxWidth: '400px', margin: '10px auto' }}>
+            Hubo un problema renderizando este apartado del panel.
+          </p>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            style={{ margin: '14px auto', display: 'inline-flex' }}
+            onClick={() => this.setState({ hasError: false, error: null })}
+          >
+            Reintentar
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 const compact = (x) => {
   const n = Number(x);
   return new Intl.NumberFormat('es-ES', { notation: 'compact', maximumFractionDigits: 1 }).format(
@@ -102,17 +143,24 @@ function Chart({ data, cost = false }) {
     y = (v) => 160 - (Number(v) / max) * 125;
   const chosen = selected === null ? null : rows[selected];
   return (
-    <section className="panel chart-panel reveal">
+    <section
+      className="panel chart-panel reveal"
+      aria-labelledby={cost ? 'chart-cost-heading' : 'chart-tokens-heading'}
+    >
       <div className="panel-heading">
         <div>
-          <h2>{cost ? 'Coste acumulado' : 'El ritmo de tus tokens'}</h2>
+          <h2 id={cost ? 'chart-cost-heading' : 'chart-tokens-heading'}>
+            {cost ? 'Coste acumulado' : 'El ritmo de tus tokens'}
+          </h2>
           <p>
             {cost
               ? 'Equivalente API · USD · periodo seleccionado'
               : `Entrada y salida cada ${data.intervalMs / 60000 < 1 ? `${data.intervalMs / 1000} s` : `${data.intervalMs / 60000} min`}`}
           </p>
         </div>
-        <span className="chart-symbol">{cost ? '↗' : '⌁'}</span>
+        <span className="chart-symbol" aria-hidden="true">
+          {cost ? '↗' : '⌁'}
+        </span>
       </div>
       {!cost && (
         <div className="legend">
@@ -262,10 +310,10 @@ function Distribution({ data }) {
   const rows = data[kind];
   const max = Math.max(1, ...rows.map((r) => Number(r.totalTokens)));
   return (
-    <section className="panel distribution reveal">
+    <section className="panel distribution reveal" aria-labelledby="distribution-title">
       <div className="panel-heading">
         <div>
-          <h2>De dónde viene</h2>
+          <h2 id="distribution-title">De dónde viene</h2>
           <p>Distribución de tokens</p>
         </div>
         <select
@@ -326,10 +374,10 @@ const stateLabels = {
 function Breakdown({ data }) {
   const t = data.totals;
   return (
-    <section className="panel breakdown reveal">
+    <section className="panel breakdown reveal" aria-labelledby="breakdown-title">
       <div className="panel-heading">
         <div>
-          <h2>Qué se está contando</h2>
+          <h2 id="breakdown-title">Qué se está contando</h2>
           <p>Consumo por llamada · los desgloses ya están incluidos en los totales</p>
         </div>
       </div>
@@ -582,10 +630,10 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
   );
 
   return (
-    <section className="panel history reveal">
+    <section className="panel history reveal" aria-labelledby="history-title">
       <div className="panel-heading">
         <div>
-          <h2>
+          <h2 id="history-title">
             {agent ? `Actividad de ${agent}` : 'Actividad reciente'}{' '}
             <span className="count">{history?.total ?? 0}</span>
           </h2>
@@ -599,16 +647,32 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
           <div className="history-view-pills" role="radiogroup" aria-label="Modo de agrupación">
             <button
               type="button"
+              role="radio"
+              aria-checked={viewMode === 'grouped'}
               className={viewMode === 'grouped' ? 'active' : ''}
               onClick={() => setViewMode('grouped')}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+                  e.preventDefault();
+                  setViewMode('flat');
+                }
+              }}
               title="Agrupar por Agente y modelo"
             >
               Agrupado
             </button>
             <button
               type="button"
+              role="radio"
+              aria-checked={viewMode === 'flat'}
               className={viewMode === 'flat' ? 'active' : ''}
               onClick={() => setViewMode('flat')}
+              onKeyDown={(e) => {
+                if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+                  e.preventDefault();
+                  setViewMode('grouped');
+                }
+              }}
               title="Lista cronológica plana"
             >
               Cronológico
@@ -639,17 +703,28 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
                   <React.Fragment key={`group-block-${g.key}`}>
                     <tr
                       className="history-group-row"
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={!collapsedGroups[g.key]}
                       onClick={() => toggleGroup(g.key)}
-                      title="Haz clic para expandir u ocultar este grupo"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          toggleGroup(g.key);
+                        }
+                      }}
+                      title="Haz clic o pulsa Enter para expandir u ocultar este grupo"
                     >
                       <td colSpan={6}>
                         <div className="history-group-header">
                           <div className="history-group-title">
-                            <span className="history-group-chevron">
+                            <span className="history-group-chevron" aria-hidden="true">
                               {collapsedGroups[g.key] ? '▶' : '▼'}
                             </span>
                             <span className="agent-badge">{g.agent}</span>
-                            <span className="history-group-sep">/</span>
+                            <span className="history-group-sep" aria-hidden="true">
+                              /
+                            </span>
                             <strong className="history-group-model">{g.model}</strong>
                           </div>
                           <div className="history-group-meta">
@@ -680,7 +755,9 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={expanded}
           >
-            <span className="accordion-chevron">{expanded ? '▲' : '▼'}</span>
+            <span className="accordion-chevron" aria-hidden="true">
+              {expanded ? '▲' : '▼'}
+            </span>
             <strong>
               {expanded
                 ? 'Mostrar vista compacta (6 más recientes)'
@@ -709,10 +786,20 @@ function HistoryPanel({ history, agent, offset, setOffset }) {
         <div className="pagination">
           <span>{history.total} respuestas en esta selección</span>
           <div>
-            <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>
+            <button
+              type="button"
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - 50))}
+              aria-label="Página anterior"
+            >
               ← Anterior
             </button>
-            <button disabled={offset + 50 >= history.total} onClick={() => setOffset(offset + 50)}>
+            <button
+              type="button"
+              disabled={offset + 50 >= history.total}
+              onClick={() => setOffset(offset + 50)}
+              aria-label="Página siguiente"
+            >
               Siguiente →
             </button>
           </div>
@@ -896,10 +983,15 @@ function App() {
     nodes.forEach((n) => io.observe(n));
     return () => io.disconnect();
   }, [data, tab, agent]);
+  const toggleButtonRef = useRef(null);
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+    toggleButtonRef.current?.focus();
+  };
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key === 'Escape' && sidebarOpen) {
-        setSidebarOpen(false);
+        closeSidebar();
       }
     };
     document.addEventListener('keydown', onKeyDown);
@@ -929,6 +1021,9 @@ function App() {
     setSessionId('');
     setMethod('');
     setOffset(0);
+    if (typeof window !== 'undefined' && window.innerWidth <= 900) {
+      closeSidebar();
+    }
   };
   const agents = agentList(data?.options.agents ?? [], sources?.agents ?? []),
     selectedAgent = agents.find((x) => x.name === agent),
@@ -938,27 +1033,24 @@ function App() {
   return (
     <div className={`shell ${sidebarOpen ? 'sidebar-open' : 'sidebar-collapsed'}`}>
       {sidebarOpen && (
-        <div
-          className="sidebar-backdrop"
-          onClick={() => setSidebarOpen(false)}
-          aria-hidden="true"
-        />
+        <div className="sidebar-backdrop" onClick={closeSidebar} aria-hidden="true" />
       )}
       <aside
         id="app-sidebar"
         className={`offcanvas-sidebar ${sidebarOpen ? 'open' : 'collapsed'}`}
         aria-label="Navegación principal"
         aria-hidden={!sidebarOpen}
+        inert={!sidebarOpen || undefined}
       >
         <div className="aside-header">
           <a className="brand" href="/" aria-label="Monitor de consumo, inicio">
             <Icon />
-            Consumo IA<span>●</span>
+            Consumo IA<span aria-hidden="true">●</span>
           </a>
           <button
             type="button"
             className="sidebar-close-btn"
-            onClick={() => setSidebarOpen(false)}
+            onClick={closeSidebar}
             aria-label="Cerrar barra lateral"
             title="Cerrar barra lateral"
           >
@@ -969,6 +1061,8 @@ function App() {
           <span className="nav-label">WORKSPACE</span>
           <nav aria-label="Principal">
             <button
+              type="button"
+              aria-current={tab === 'overview' && !agent ? 'page' : undefined}
               className={tab === 'overview' && !agent ? 'active' : ''}
               onClick={() => {
                 selectAgent('');
@@ -979,16 +1073,22 @@ function App() {
               Vista general
             </button>
             <button
+              type="button"
+              aria-current={tab === 'history' && !agent ? 'page' : undefined}
               className={tab === 'history' && !agent ? 'active' : ''}
               onClick={() => {
                 selectAgent('');
                 setTab('history');
               }}
             >
-              <span className="history-icon">↺</span>
+              <span className="history-icon" aria-hidden="true">
+                ↺
+              </span>
               Historial de eventos
             </button>
             <button
+              type="button"
+              aria-current={tab === 'sources' && !agent ? 'page' : undefined}
               className={tab === 'sources' && !agent ? 'active' : ''}
               onClick={() => {
                 selectAgent('');
@@ -1003,7 +1103,9 @@ function App() {
           <AgentNavigation agents={agents} selected={agent} onSelect={selectAgent} />
         </div>
         <div className="sidebar-bottom">
-          <span className="lock">◇</span>
+          <span className="lock" aria-hidden="true">
+            ◇
+          </span>
           <div>
             Espacio privado<small>Solo este navegador</small>
           </div>
@@ -1013,6 +1115,7 @@ function App() {
         <header>
           <div className="header-left">
             <button
+              ref={toggleButtonRef}
               type="button"
               className="sidebar-toggle"
               onClick={() => setSidebarOpen((prev) => !prev)}
@@ -1025,7 +1128,7 @@ function App() {
               <span className="sidebar-toggle-text">{sidebarOpen ? 'Ocultar menú' : 'Menú'}</span>
             </button>
             <span className="breadcrumb">
-              Workspace <b>/</b>{' '}
+              Workspace <b aria-hidden="true">/</b>{' '}
               <strong>
                 {agent
                   ? agent
@@ -1042,9 +1145,11 @@ function App() {
               className="session"
               title={session ? `Caduca ${fulltime(session.expiresAt)}` : ''}
             >
-              ◷ {remainingText}
+              <span aria-hidden="true">◷ </span>
+              {remainingText}
             </span>
             <button
+              type="button"
               className="icon-button"
               onClick={logout}
               disabled={!session}
@@ -1084,7 +1189,7 @@ function App() {
             </span>
           </div>
           <div className="toolbar reveal">
-            <div className="segments" aria-label="Ventana de tiempo">
+            <div className="segments" role="group" aria-label="Ventana de tiempo">
               {[
                 ['15m', '15 min'],
                 ['1h', '1 hora'],
@@ -1093,6 +1198,7 @@ function App() {
               ].map(([v, l]) => (
                 <button
                   key={v}
+                  type="button"
                   aria-pressed={window === v}
                   className={window === v ? 'selected' : ''}
                   onClick={() => change(setWindow, v)}
@@ -1215,7 +1321,7 @@ function App() {
               <div className="stats" key={pulse}>
                 <article className="stat">
                   <div>
-                    Tokens totales <span>◈</span>
+                    Tokens totales <span aria-hidden="true">◈</span>
                   </div>
                   <strong title={exact(data.totals.totalTokens)}>
                     {compact(data.totals.totalTokens)}
@@ -1224,7 +1330,10 @@ function App() {
                 </article>
                 <article className="stat">
                   <div>
-                    Entrada <span className="mint-text">↓</span>
+                    Entrada{' '}
+                    <span className="mint-text" aria-hidden="true">
+                      ↓
+                    </span>
                   </div>
                   <strong>{compact(data.totals.inputTokens)}</strong>
                   <small>
@@ -1234,7 +1343,10 @@ function App() {
                 </article>
                 <article className="stat">
                   <div>
-                    Salida <span className="violet-text">↑</span>
+                    Salida{' '}
+                    <span className="violet-text" aria-hidden="true">
+                      ↑
+                    </span>
                   </div>
                   <strong>{compact(data.totals.outputTokens)}</strong>
                   <small>
@@ -1244,7 +1356,7 @@ function App() {
                 </article>
                 <article className="stat cost">
                   <div>
-                    Equivalente API estimado <span>↗</span>
+                    Equivalente API estimado <span aria-hidden="true">↗</span>
                   </div>
                   <strong>
                     {data.totals.count === data.totals.unpriced && data.totals.count > 0
@@ -1366,4 +1478,8 @@ function App() {
     </div>
   );
 }
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById('root')).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
+);

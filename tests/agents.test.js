@@ -1,8 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
-import { openDb, insertEvent, analytics, filters, getDynamicAgents } from '../server/db.js';
-import { createApp } from '../server/app.js';
+import {
+  openDb,
+  insertEvent,
+  analytics,
+  filters,
+  getDynamicAgents,
+  issue,
+  exchange,
+} from '../server/db.js';
+import { createApp, cookieName } from '../server/app.js';
 const epoch = Date.parse('2026-10-29T18:00:00Z');
 const row = (id, agent, changes = {}) => ({
   responseId: String(id),
@@ -131,6 +139,69 @@ test('dynamic agents register via API and auto-register via contract ingestion',
       updatedDynamic.some((a) => a.id === 'autonomous-coder'),
       true,
     );
+
+    // Register an agent with custom model rates (omitting cached rate to test defaulting)
+    const ratedRes = await request(app)
+      .post('/api/agents/register')
+      .set('authorization', 'Bearer ingest-secret')
+      .send({
+        id: 'rated-agent',
+        name: 'Rated Agent',
+        reader: 'contract',
+        provider: 'custom-provider',
+        rates: {
+          'custom-llm-v1': {
+            input: '2.0',
+            output: '4.0',
+          },
+        },
+      });
+    assert.equal(ratedRes.status, 200);
+
+    // Ingest event for that model and verify price estimation uses the dynamic rates
+    const ratedIngest = await request(app)
+      .post('/api/ingest')
+      .set('authorization', 'Bearer ingest-secret')
+      .send({
+        source: 'rated-agent',
+        schema: 'usage-monitor.usage.v1',
+        semantics: 'input_includes_cache;output_includes_reasoning',
+        provider: 'custom-provider',
+        model: 'custom-llm-v1',
+        id: 'rated-resp-1',
+        occurredAt: new Date().toISOString(),
+        inputTokens: 1000000,
+        outputTokens: 500000,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningOutputTokens: 0,
+      });
+    assert.equal(ratedIngest.status, 200);
+
+    // Verify the event in the DB has cost calculated based on rates (1M input @ $2/M + 0.5M output @ $4/M = $4.00)
+    const eventRow = db.prepare('SELECT data FROM events WHERE model=?').get('custom-llm-v1');
+    assert.ok(eventRow);
+    const parsedData = JSON.parse(eventRow.data);
+    assert.equal(parsedData.costUsd, '4');
+
+    // Invalid agent ID should return 400
+    const invalidRes = await request(app)
+      .post('/api/agents/register')
+      .set('authorization', 'Bearer ingest-secret')
+      .send({
+        id: 'invalid id with spaces!',
+      });
+    assert.equal(invalidRes.status, 400);
+
+    // Discovery endpoint should return list of local technologies when authenticated
+    const s = exchange(db, issue(db).token);
+    const discRes = await request(app)
+      .get('/api/discovery')
+      .set('x-usage-monitor-gateway', 'gw-key')
+      .set('cookie', cookieName + '=' + s.session);
+    assert.equal(discRes.status, 200);
+    assert.ok(Array.isArray(discRes.body.technologies));
+    assert.ok(discRes.body.technologies.some((t) => t.id === 'opencode'));
   } finally {
     close();
     db.close();

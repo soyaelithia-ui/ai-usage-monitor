@@ -60,9 +60,10 @@ const unestimated = (costNote) => ({
   costOutputUsd: null,
   costNote,
 });
-export function estimate(e) {
-  let r = pricing[e.model];
-  if (!r || r.provider !== e.provider) return unestimated(pricingRules.unknownRate);
+export function estimate(e, customPricing) {
+  let r = (customPricing && customPricing[e.model]) || pricing[e.model];
+  if (!r || (r.provider && e.provider && r.provider !== e.provider))
+    return unestimated(pricingRules.unknownRate);
   // Scheduled price changes; the latest entry whose date has passed wins.
   for (const change of pricingSchedule[e.model] ?? [])
     if (Date.parse(e.occurredAt) >= Date.parse(change.from)) r = { ...r, ...change };
@@ -77,7 +78,10 @@ export function estimate(e) {
     scale = long ? lc.input : 1;
   const cacheWriteRate =
     e.cacheWriteDuration === '12h' ? (r.cacheWrite12h ?? r.cacheWrite) : r.cacheWrite;
-  const cacheRead = d(e.cachedInputTokens).times(r.cached).times(scale).div(1e6);
+  const cacheRead = d(e.cachedInputTokens)
+    .times(r.cached ?? r.input)
+    .times(scale)
+    .div(1e6);
   const cacheWrite = d(e.cacheWriteInputTokens)
     .times(cacheWriteRate ?? 0)
     .times(scale)

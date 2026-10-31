@@ -43,6 +43,7 @@ export function insertEvent(db, input) {
     canonical = JSON.stringify(e),
     fingerprint = hash(canonical),
     identity = hash(e.provider + ':' + e.source + ':' + e.responseId);
+  const dynamicPricing = getDynamicPricing(db);
   const prior = db.prepare('SELECT fingerprint,data FROM events WHERE identity=?').get(identity);
   observe(db, identity, { ...e, ...provenance(input) }, fingerprint);
   if (input.method === 'native')
@@ -56,7 +57,7 @@ export function insertEvent(db, input) {
     }
     if (input.method === 'native') {
       const old = JSON.parse(prior.data),
-        calc = estimate({ ...e, ...provenance(input) }),
+        calc = estimate({ ...e, ...provenance(input) }, dynamicPricing),
         components = {};
       if (calc.costUsd === old.costUsd)
         for (const k of [
@@ -81,7 +82,11 @@ export function insertEvent(db, input) {
     Date.parse(e.occurredAt),
     e.agent,
     e.model,
-    JSON.stringify({ ...e, ...estimate({ ...e, ...provenance(input) }), ...provenance(input) }),
+    JSON.stringify({
+      ...e,
+      ...estimate({ ...e, ...provenance(input) }, dynamicPricing),
+      ...provenance(input),
+    }),
   );
   return 'inserted';
 }
@@ -357,33 +362,42 @@ export function getDynamicAgents(db) {
       .all()
       .map((a) => ({
         ...a,
-        config: a.config_json ? JSON.parse(a.config_json) : undefined,
+        config: (() => {
+          try {
+            return a.config_json ? JSON.parse(a.config_json) : undefined;
+          } catch {
+            return undefined;
+          }
+        })(),
       }));
   } catch {
     return [];
   }
 }
 export function setDynamicPricing(db, p) {
+  const cached = p.cached ?? p.input ?? '0';
+  const cacheWrite = p.cacheWrite ?? p.cache_write ?? null;
+  const cacheWrite12h = p.cacheWrite12h ?? p.cache_write_12h ?? null;
   db.prepare(
     `
     INSERT INTO dynamic_pricing(model, provider, input, cached, output, cache_write, cache_write_12h)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(model) DO UPDATE SET
-      provider=excluded.provider,
+      provider=coalesce(excluded.provider, dynamic_pricing.provider),
       input=excluded.input,
       cached=excluded.cached,
       output=excluded.output,
-      cache_write=excluded.cache_write,
-      cache_write_12h=excluded.cache_write_12h
+      cache_write=coalesce(excluded.cache_write, dynamic_pricing.cache_write),
+      cache_write_12h=coalesce(excluded.cache_write_12h, dynamic_pricing.cache_write_12h)
   `,
   ).run(
     p.model,
     p.provider ?? null,
-    p.input,
-    p.cached,
-    p.output,
-    p.cache_write ?? null,
-    p.cache_write_12h ?? null,
+    String(p.input),
+    String(cached),
+    String(p.output),
+    cacheWrite ? String(cacheWrite) : null,
+    cacheWrite12h ? String(cacheWrite12h) : null,
   );
 }
 export function getDynamicPricing(db) {

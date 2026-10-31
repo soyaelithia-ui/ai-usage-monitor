@@ -33,8 +33,8 @@ export function sourceState(source) {
 }
 export function AgentMark({ agent }) {
   return (
-    <span className={`agent-mark agent-${agent.tone}`} aria-hidden="true">
-      {agent.symbol}
+    <span className={`agent-mark agent-${agent?.tone || 'mint'}`} aria-hidden="true">
+      {agent?.symbol || (agent?.name ? agent.name.slice(0, 1).toUpperCase() : '◈')}
     </span>
   );
 }
@@ -44,6 +44,7 @@ export function AgentNavigation({ agents, selected, onSelect }) {
       {agents.map((agent) => (
         <button
           key={agent.name}
+          type="button"
           aria-label={`Apartado ${agent.name}`}
           aria-current={selected === agent.name ? 'page' : undefined}
           className={selected === agent.name ? 'active' : ''}
@@ -57,7 +58,14 @@ export function AgentNavigation({ agents, selected, onSelect }) {
     </nav>
   );
 }
-const exact = (value) => BigInt(value ?? 0).toLocaleString('es-ES');
+const exact = (value) => {
+  if (value == null || value === '') return '0';
+  try {
+    return BigInt(value).toLocaleString('es-ES');
+  } catch {
+    return String(value);
+  }
+};
 const compact = (value) =>
   new Intl.NumberFormat('es-ES', { notation: 'compact', maximumFractionDigits: 1 }).format(
     Number(value ?? 0),
@@ -72,10 +80,19 @@ const date = (value) => new Date(value).toLocaleString('es-ES');
 function Sparkline({ buckets = [] }) {
   const max = Math.max(
     1,
-    ...buckets.flatMap((b) => [Number(b.inputTokens), Number(b.outputTokens)]),
+    ...buckets.flatMap((b) => [Number(b.inputTokens || 0), Number(b.outputTokens || 0)]),
   );
-  const points = (key) =>
-    buckets.map((b, i) => `${(i * 300) / 59},${53 - (Number(b[key]) / max) * 45}`).join(' ');
+  const divisor = Math.max(1, buckets.length - 1);
+  const points = (key) => {
+    if (!buckets.length) return '';
+    if (buckets.length === 1) {
+      const y = 53 - (Number(buckets[0][key] || 0) / max) * 45;
+      return `0,${y} 300,${y}`;
+    }
+    return buckets
+      .map((b, i) => `${(i * 300) / divisor},${53 - (Number(b[key] || 0) / max) * 45}`)
+      .join(' ');
+  };
   return (
     <svg
       className="agent-sparkline"
@@ -131,21 +148,8 @@ export function AgentSections({ agents, data, sources, onSelect, connected, sele
       </div>
       <div className="agent-cards">
         {visibleAgents.length === 0 ? (
-          <div
-            className="agent-empty-notice"
-            style={{
-              gridColumn: '1 / -1',
-              padding: '24px 16px',
-              textAlign: 'center',
-              color: '#889890',
-              background: 'rgba(255, 255, 255, 0.02)',
-              borderRadius: '12px',
-              border: '1px dashed #2a3831',
-            }}
-          >
-            <p style={{ margin: 0, fontSize: '0.92rem' }}>
-              No hay agentes con actividad registrada en esta ventana de tiempo.
-            </p>
+          <div className="agent-empty-notice">
+            <p>No hay agentes con actividad registrada en esta ventana de tiempo.</p>
           </div>
         ) : (
           visibleAgents.map((agent, index) => {
@@ -153,6 +157,7 @@ export function AgentSections({ agents, data, sources, onSelect, connected, sele
               status = sourceState(sources?.[agent.source]);
             return (
               <button
+                type="button"
                 className={`agent-card agent-${agent.tone}`}
                 key={agent.name}
                 style={{ animationDelay: `${Math.min(index, 7) * 60}ms` }}
@@ -248,7 +253,7 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
   const buckets = metrics?.buckets || [];
   const latestBucket = buckets.length ? buckets[buckets.length - 1] : null;
   const currentTokens = latestBucket
-    ? BigInt(latestBucket.inputTokens) + BigInt(latestBucket.outputTokens)
+    ? BigInt(latestBucket.inputTokens || 0) + BigInt(latestBucket.outputTokens || 0)
     : 0n;
   const speed = currentTokens > 0n ? Math.round(Number(currentTokens) / 60) : 0;
   const totalTurns = metrics?.count || 0;
@@ -256,18 +261,32 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
   const status = sourceState(source);
   const isStreaming = connected && status.state === 'running';
 
+  const inputTotal = Math.max(1, Number(metrics?.inputTokens || 0));
+  const cachedRatio = Math.min(
+    100,
+    Math.round((Number(metrics?.cachedInputTokens || 0) / inputTotal) * 100),
+  );
+  const outputTotal = Math.max(1, Number(metrics?.outputTokens || 0));
+  const reasoningRatio = Math.min(
+    100,
+    Math.round((Number(metrics?.reasoningOutputTokens || 0) / outputTotal) * 100),
+  );
+
   return (
-    <section className={`live-telemetry agent-${agent?.tone || 'mint'} reveal`}>
+    <section
+      className={`live-telemetry agent-${agent?.tone || 'mint'} reveal`}
+      aria-labelledby="telemetry-heading"
+    >
       <div className="telemetry-header">
         <div className="telemetry-title">
           <div className={`telemetry-heartbeat ${isStreaming ? 'beating' : ''}`}>
             <svg viewBox="0 0 40 24" className="ecg-line" aria-hidden="true">
               <path d="M 0 12 L 10 12 L 14 3 L 18 21 L 22 9 L 26 15 L 30 12 L 40 12" />
             </svg>
-            <span className="live-dot" />
+            <span className="live-dot" aria-hidden="true" />
           </div>
           <div>
-            <h3>Telemetría en Tiempo Real</h3>
+            <h3 id="telemetry-heading">Telemetría en Tiempo Real</h3>
             <span className="telemetry-sub">
               {isStreaming ? 'Monitoreo activo de turnos y velocidad' : status.label}
             </span>
@@ -297,16 +316,18 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
             <strong className="kpi-num mint-text">{compact(metrics?.inputTokens)}</strong>
             <small className="kpi-subnum">⚡ {compact(metrics?.cachedInputTokens)} en caché</small>
           </div>
-          <div className="mini-progress-bar">
+          <div
+            className="mini-progress-bar"
+            role="progressbar"
+            aria-valuenow={cachedRatio}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Porcentaje de entrada en caché"
+          >
             <div
               className="bar-fill mint-fill"
               style={{
-                width: `${Math.min(
-                  100,
-                  (Number(metrics?.cachedInputTokens || 0) /
-                    Math.max(1, Number(metrics?.inputTokens || 1))) *
-                    100,
-                )}%`,
+                width: `${cachedRatio}%`,
               }}
             />
           </div>
@@ -319,16 +340,18 @@ export function LiveTelemetry({ agent, metrics, source, connected, pulse }) {
               🧠 {compact(metrics?.reasoningOutputTokens)} razonamiento
             </small>
           </div>
-          <div className="mini-progress-bar">
+          <div
+            className="mini-progress-bar"
+            role="progressbar"
+            aria-valuenow={reasoningRatio}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-label="Porcentaje de razonamiento"
+          >
             <div
               className="bar-fill violet-fill"
               style={{
-                width: `${Math.min(
-                  100,
-                  (Number(metrics?.reasoningOutputTokens || 0) /
-                    Math.max(1, Number(metrics?.outputTokens || 1))) *
-                    100,
-                )}%`,
+                width: `${reasoningRatio}%`,
               }}
             />
           </div>

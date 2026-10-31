@@ -134,6 +134,10 @@ aside.collapsed {
   color: #bbf3d4;
   border-color: #354f3f;
 }
+.sidebar-close-btn:focus-visible {
+  outline: 2px solid #bba1e0;
+  outline-offset: 2px;
+}
 .sidebar-close-btn svg {
   width: 14px;
   height: 14px;
@@ -180,7 +184,7 @@ aside.collapsed {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 1.7px;
-  color: #75887b;
+  color: #8da294;
   margin: 62px 13px 16px;
 }
 nav {
@@ -283,6 +287,10 @@ header {
   background: #1b2a21;
   color: #e5f5ed;
   border-color: #385544;
+}
+.sidebar-toggle:focus-visible {
+  outline: 2px solid #bba1e0;
+  outline-offset: 2px;
 }
 .sidebar-toggle svg {
   width: 16px;
@@ -631,6 +639,10 @@ i.violet {
   cursor: pointer;
   transition: all 0.15s ease;
 }
+.history-view-pills button:focus-visible {
+  outline: 2px solid #bba1e0;
+  outline-offset: 1px;
+}
 .history-view-pills button.active {
   background: #203528;
   color: #bbf3d4;
@@ -643,6 +655,10 @@ i.violet {
 }
 .history-group-row:hover {
   background: #17291f;
+}
+.history-group-row:focus-visible {
+  outline: 2px solid #bba1e0;
+  outline-offset: -2px;
 }
 .history-group-row td {
   padding: 10px 20px;
@@ -1341,6 +1357,19 @@ aside {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 15px;
 }
+.agent-empty-notice {
+  grid-column: 1 / -1;
+  padding: 24px 16px;
+  text-align: center;
+  color: #889890;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 12px;
+  border: 1px dashed #2a3831;
+}
+.agent-empty-notice p {
+  margin: 0;
+  font-size: 0.92rem;
+}
 .agent-card {
   display: flex;
   flex-direction: column;
@@ -1868,7 +1897,7 @@ nav button.active::before {
 .kpi-label {
   font-size: 11px;
   font-weight: 500;
-  color: #85988d;
+  color: #96aba0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -1894,7 +1923,7 @@ nav button.active::before {
 }
 .kpi-hint {
   font-size: 10px;
-  color: #697a70;
+  color: #809688;
 }
 .mini-progress-bar {
   height: 4px;
