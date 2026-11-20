@@ -26,11 +26,11 @@ flowchart TD
 
         subgraph Handlers ["API & Real-Time Subsystems"]
             HealthAPI["/health"]
-            AuthAPI["/api/auth/* & /access"]
+            AuthAPI["/auth/* & /access"]
             UsageAPI["/api/analytics, /api/events, /api/pricing"]
             SourcesAPI["/api/sources, /api/discovery, /api/reconciliation"]
             IngestAPI["/api/agents/register & /api/ingest"]
-            SSEBroker["/api/sse Broker"]
+            SSEBroker["/api/stream (alias /api/sse)"]
             StaticServer["Embedded Static Assets (go:embed web/dist)"]
         end
 
@@ -66,33 +66,35 @@ web/
 internal/
   api/
     router.go             # Chi router, auth/session enforcement, static asset serving
-    auth_handlers.go      # Cookie session login, logout, revoke, access token verification
+    auth.go               # Cookie session exchange, session check, logout, CSRF verification
     usage_handlers.go     # /api/analytics, /api/events, /api/sources, /api/discovery, /api/pricing, /api/reconciliation
     ingest_handlers.go    # /api/agents/register, /api/ingest (Bearer auth + rate declaration)
-    sse_handler.go        # /api/sse live stream
-  auth/                   # Machine-key Argon2id/HMAC token verification & signed sessions
+    sse.go                # /api/stream (alias /api/sse) live stream
   config/                 # Environment + JSON config loader (8 local roots + opt-in pricing sync)
   db/
     sqlite.go             # Pure-Go SQLite WAL setup, migrations, RateResolver wiring
     schema.go             # events, dynamic_pricing, text_measurements, cursors, errors, agents
+    auth.go               # One-time token issuance, atomic exchange, sealed sessions & revocation
     events.go             # Atomic event insertion, auto-pricing resolution, reconciliation storage
     queries.go            # Analytics, pagination, observed-only pricing, canonical agent filtering
   ingest/
     adapters.go           # Local specs for codex, opencode, claude, antigravity, gemini, cursor, copilot, hermes
     collector.go          # Safe O_NOFOLLOW/O_NONBLOCK JSONL reader, same-size rewrite detection, silent tokenizer fallback
+    fsguard.go            # Safe read-only opens, bounded walks, SQLite & tail signatures
     sqlite_reader.go      # OpenCode SQLite reader + silent tokenizer fallback
     discovery.go          # Local technology auto-discovery & manager
   pricing/
-    decimal.go            # Exact shopspring/decimal helpers
     normalize.go          # Provider/aggregator/Bedrock/date/version canonicalization
     catalog.go            # Verified Nov 2026 internal catalog, deprecated models, long-context & schedules
-    estimate.go           # Fail-closed cost estimator
+    estimate.go           # Exact shopspring/decimal fail-closed cost estimator
     resolver.go           # Opt-in external catalog resolver (models.dev, LiteLLM, OpenRouter) + 0600 disk cache
   security/
     guard.go              # Path traversal & scanner rejection
     headers.go            # Strict CSP (style-src 'self', script-src 'self') & security headers
     proxy.go              # Loopback proxy spoofing & duplicate header defense
     origin.go             # Origin allowlist, loopback aliases, framing prevention
+    sanitize.go           # Icon URL & decimal rate validation
+    seal.go               # Machine-bound HMAC-SHA256 sealing (machine.key) & constant-time checks
   sse/
     broker.go             # Thread-safe SSE channel fan-out
   tokenizer/

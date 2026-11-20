@@ -20,4 +20,12 @@ El panel trata las métricas y los identificadores de sesiones como información
 
 ## Informar de una vulnerabilidad
 
-Utiliza el canal privado de avisos de seguridad del repositorio cuando esté disponible. No publiques credenciales, conversaciones, bases de datos ni identificadores privados en incidencias públicas; incluye una reproducción mínima con datos sintéticos.
+Si encuentras una vulnerabilidad de seguridad, **no abras una incidencia pública**. Utiliza el canal privado de GitHub Security Advisories del repositorio:
+
+- <https://github.com/soyaelithia-ui/ai-usage-monitor/security/advisories/new>
+
+Incluye una descripción clara del impacto y una reproducción mínima usando exclusivamente **datos sintéticos**. No adjuntes credenciales, `machine.key`, tokens, conversaciones reales, bases de datos ni identificadores privados.
+
+## Versiones soportadas
+
+Las correcciones de seguridad se aplican sobre la rama principal (`main`).

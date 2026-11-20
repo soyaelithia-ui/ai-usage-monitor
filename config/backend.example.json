@@ -1,0 +1,11 @@
+{
+  "origin": "http://127.0.0.1:8080",
+  "allowedOrigins": [],
+  "backendPort": 8080,
+  "db": "./data/usage.db",
+  "ingestKey": "",
+  "gatewayKey": "",
+  "pricingSyncEnabled": false,
+  "pricingCachePath": "./data/pricing-cache.json",
+  "pricingSources": ["models.dev", "litellm", "openrouter"]
+}
