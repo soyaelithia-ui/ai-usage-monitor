@@ -2,9 +2,11 @@ package api
 
 import (
 	"net/http"
+	"os"
 	"strconv"
 
 	"github.com/soyaelithia-ui/ai-usage-monitor/internal/db"
+	"github.com/soyaelithia-ui/ai-usage-monitor/internal/hooks"
 	"github.com/soyaelithia-ui/ai-usage-monitor/internal/ingest"
 	"github.com/soyaelithia-ui/ai-usage-monitor/internal/pricing"
 	"github.com/soyaelithia-ui/ai-usage-monitor/internal/security"
@@ -179,7 +181,9 @@ func (s *Server) handleSources(w http.ResponseWriter, _ *http.Request) {
 			resp[k] = v
 		}
 	}
+	cwd, _ := os.Getwd()
 	resp["agents"] = merged
+	resp["hooks"] = hooks.InspectIntegrations(s.Cfg, s.Store, cwd)
 	resp["errors"] = errs
 	resp["errorCount"] = errCount
 	writeJSON(w, http.StatusOK, resp)

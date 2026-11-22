@@ -90,6 +90,41 @@ func Open(path, machineKeyOverride string, nowFn func() time.Time) (*Store, erro
 	}, nil
 }
 
+// OpenReadOnly opens an existing SQLite database in read-only mode without creating files or machine keys.
+// Used by short-lived agent hooks so concurrent readers never block or contend with the running daemon.
+func OpenReadOnly(path string, nowFn func() time.Time) (*Store, error) {
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file::memory:") {
+		return nil, os.ErrNotExist
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("invalid sqlite path: %s", path)
+	}
+
+	dsn := "file:" + path + "?mode=ro&_pragma=busy_timeout(500)"
+	sqlDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open readonly sqlite: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout = 500;"); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("readonly busy_timeout: %w", err)
+	}
+
+	return &Store{
+		SQL:   sqlDB,
+		Path:  path,
+		NowFn: nowFn,
+	}, nil
+}
+
 // SetRateResolver attaches an optional cached public catalog resolver for uncataloged models.
 func (s *Store) SetRateResolver(r pricing.RateResolver) {
 	s.RateResolver = r

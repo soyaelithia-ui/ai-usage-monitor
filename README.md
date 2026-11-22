@@ -19,6 +19,7 @@ Compila en un **único binario Go puro (sin CGo)** que embebe el frontend compil
 - **Reglas *fail-closed***: modelos desconocidos, depreciados, sin desglose completo de caché, con modalidad no verificada o sin tarifa de escritura de caché (`12h` nunca cae a `30m`) quedan explícitamente sin estimar.
 - **Invariante de exposición**: el catálogo interno de tarifas es privado; la web y `/api/pricing` solo exponen modelos realmente observados en telemetría.
 - **Autodetección y auto-registro**: descubre localmente 8 tecnologías (`codex`, `opencode`, `claude`, `antigravity`, `gemini`, `cursor`, `copilot`, `hermes`) sin exponer rutas locales y admite autorregistro HTTP y declaración automática de tarifas (`POST /api/ingest`, `POST /api/agents/register`) más resolución opcional contra fuentes públicas verificables (`models.dev`, LiteLLM, OpenRouter) en caché local.
+- **Hooks nativos y cuotas en tiempo real**: compatibilidad nativa y **no bloqueante** con los hooks de **Antigravity** (`metadata.user_markdown` con 0 tokens al modelo), **Codex CLI**, **Claude Code** (hooks + `statusLine`), **Gemini CLI**, **Cursor** y **GitHub Copilot CLI** mediante `ai-usage-monitor hook`, instalador idempotente (`ai-usage-monitor hooks install`) y endpoint local `POST /api/hooks/{agent}`.
 - **Respaldo interno silencioso**: múltiples tokenizadores ocultos en Go puro (sin CGo) para texto visible sin contadores nativos, guardados aparte para conciliación y nunca sumados al consumo nativo ni expuestos en la UI o API pública.
 - **Seguridad perimetral**: token de un solo uso sellado con `machine.key` (HMAC-SHA256), sesión `__Host-usage-monitor` de 8 h, CSRF sincronizado, rechazo de cabeceras de proxy/traversals/escáneres y CSP estricta sin estilos inline.
 - **Diseño accesible**: 4 temas (`Obsidiana`, `Zafiro`, `Ámbar`, `Esmeralda`) en modo oscuro y claro con contraste WCAG AA, `tabular-nums`, `font-kerning: none` y respeto a `prefers-reduced-motion`.
@@ -101,6 +102,10 @@ chmod 600 ~/.config/ai-usage-monitor/backend.json
 | `PRICING_SYNC_ENABLED`      | `pricingSyncEnabled`        | Habilita resolución opcional en red hacia `models.dev`, LiteLLM y OpenRouter (`false` por defecto). |
 | `PRICING_CACHE_PATH`        | `pricingCachePath`          | Caché local JSON (`0600`) para tarifas externas verificadas.                                        |
 | `PRICING_SOURCES`           | `pricingSources`            | Orden de fuentes externas (`models.dev,litellm,openrouter`).                                        |
+| `QUOTA_WINDOW`              | `quotas.window`             | Ventana de cuota en tiempo real (`15m`, `1h`, `24h`, `7d`; por defecto `24h`).                      |
+| `QUOTA_USD`                 | `quotas.default.usd`        | Límite decimal exacto en USD por ventana (opcional, solo informativo, nunca bloquea).               |
+| `QUOTA_TOKENS`              | `quotas.default.tokens`     | Límite entero de tokens por ventana (opcional, solo informativo, nunca bloquea).                    |
+| `QUOTAS_JSON`               | `quotas`                    | Configuración JSON de cuotas globales y por agente (`quotas.agents.<id>`).                          |
 | `RATE_LIMIT_MAX`            | —                           | Límite global de peticiones por minuto (por defecto `600`).                                         |
 
 > [!NOTE]
@@ -147,13 +152,15 @@ curl -X POST http://127.0.0.1:8080/api/ingest \
 | `POST /auth/logout`         | Sesión + CSRF       | Cierre de sesión y revocación inmediata de SSE.                        |
 | `GET /api/analytics`        | Cookie de sesión    | Totales, 60 cubos temporales, tarjetas de agentes y desglose por modelo. |
 | `GET /api/events`           | Cookie de sesión    | Historial paginado y opciones de filtro de la ventana seleccionada.    |
-| `GET /api/sources`          | Cookie de sesión    | Estado de lectores, agentes activos e incidencias recientes.           |
+| `GET /api/sources`          | Cookie de sesión    | Estado de lectores, agentes activos, hooks nativos e incidencias.      |
+| `GET /api/hooks`            | Cookie de sesión    | Integraciones de hooks nativos y estado de cuotas en tiempo real.      |
 | `GET /api/discovery`        | Cookie de sesión    | Tecnologías detectadas y modelos observados con estado de tarifa.      |
 | `GET /api/reconciliation`   | Cookie de sesión    | Conciliación nativa por sesión y mediciones separadas de texto visible. |
 | `GET /api/pricing`          | Cookie de sesión    | Tarifas resueltas exclusivamente para modelos observados en eventos.   |
 | `GET /api/stream`           | Cookie de sesión    | Notificaciones SSE (`ready`, `change`, `expired`).                     |
 | `POST /api/ingest`          | Bearer `INGEST_KEY` | Ingesta local y auto-registro de tarifas de modelos.                   |
 | `POST /api/agents/register` | Bearer `INGEST_KEY` | Registro explícito de agentes dinámicos y tarifas.                     |
+| `POST /api/hooks/{agent}`   | Bearer `INGEST_KEY` | Respuesta de hook nativo no bloqueante (cuota y gasto en tiempo real). |
 
 ## Pruebas y desarrollo
 
@@ -182,6 +189,7 @@ Consulta [SECURITY.md](SECURITY.md) para el modelo de amenazas y el canal privad
 
 ## Documentación adicional
 
+- [Hooks nativos de agentes y cuotas en tiempo real](docs/hooks.md)
 - [Medición, tarifas y tokenizadores ocultos](docs/measurement.md)
 - [Despliegue con systemd y HTTPS](docs/deployment.md)
 - [Pruebas y auditoría E2E](docs/testing.md)

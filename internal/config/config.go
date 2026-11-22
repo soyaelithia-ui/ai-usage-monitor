@@ -12,7 +12,26 @@ import (
 	"strings"
 )
 
-var secretFormat = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+var (
+	secretFormat = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+	quotaUSDRe   = regexp.MustCompile(`^(?:0|[1-9]\d*)(?:\.\d{1,12})?$`)
+	quotaTokRe   = regexp.MustCompile(`^(?:0|[1-9]\d*)$`)
+	validWindows = map[string]bool{"": true, "15m": true, "1h": true, "24h": true, "7d": true}
+)
+
+// QuotaLimit defines optional exact-decimal spend and/or integer token limits for a time window.
+type QuotaLimit struct {
+	USD    string `json:"usd,omitempty"`
+	Tokens string `json:"tokens,omitempty"`
+	Window string `json:"window,omitempty"`
+}
+
+// QuotasConfig configures default and per-agent real-time spend/token quotas.
+type QuotasConfig struct {
+	Window  string                `json:"window,omitempty"`
+	Default QuotaLimit            `json:"default,omitempty"`
+	Agents  map[string]QuotaLimit `json:"agents,omitempty"`
+}
 
 // Config holds runtime configuration for the AI Usage Monitor backend.
 type Config struct {
@@ -35,28 +54,30 @@ type Config struct {
 	PricingSyncEnabled bool
 	PricingCachePath   string
 	PricingSources     []string
+	Quotas             QuotasConfig
 	RateLimitMax       int
 }
 
 type fileConfig struct {
-	Origin             string   `json:"origin"`
-	AllowedOrigins     []string `json:"allowedOrigins"`
-	BackendPort        int      `json:"backendPort"`
-	GatewayPort        int      `json:"gatewayPort"`
-	GatewayKey         string   `json:"gatewayKey"`
-	IngestKey          string   `json:"ingestKey"`
-	DB                 string   `json:"db"`
-	CodexRoot          string   `json:"codexRoot"`
-	OpenCodeDB         string   `json:"openCodeDb"`
-	ClaudeRoot         string   `json:"claudeRoot"`
-	AntigravityRoot    string   `json:"antigravityRoot"`
-	GeminiRoot         string   `json:"geminiRoot"`
-	CursorRoot         string   `json:"cursorRoot"`
-	CopilotRoot        string   `json:"copilotRoot"`
-	HermesRoot         string   `json:"hermesRoot"`
-	PricingSyncEnabled *bool    `json:"pricingSyncEnabled"`
-	PricingCachePath   string   `json:"pricingCachePath"`
-	PricingSources     []string `json:"pricingSources"`
+	Origin             string        `json:"origin"`
+	AllowedOrigins     []string      `json:"allowedOrigins"`
+	BackendPort        int           `json:"backendPort"`
+	GatewayPort        int           `json:"gatewayPort"`
+	GatewayKey         string        `json:"gatewayKey"`
+	IngestKey          string        `json:"ingestKey"`
+	DB                 string        `json:"db"`
+	CodexRoot          string        `json:"codexRoot"`
+	OpenCodeDB         string        `json:"openCodeDb"`
+	ClaudeRoot         string        `json:"claudeRoot"`
+	AntigravityRoot    string        `json:"antigravityRoot"`
+	GeminiRoot         string        `json:"geminiRoot"`
+	CursorRoot         string        `json:"cursorRoot"`
+	CopilotRoot        string        `json:"copilotRoot"`
+	HermesRoot         string        `json:"hermesRoot"`
+	PricingSyncEnabled *bool         `json:"pricingSyncEnabled"`
+	PricingCachePath   string        `json:"pricingCachePath"`
+	PricingSources     []string      `json:"pricingSources"`
+	Quotas             *QuotasConfig `json:"quotas"`
 }
 
 // ConfigPath returns the path to the optional backend.json configuration file.
@@ -132,6 +153,9 @@ func Load() (*Config, error) {
 		}
 		if len(fc.PricingSources) > 0 {
 			cfg.PricingSources = fc.PricingSources
+		}
+		if fc.Quotas != nil {
+			cfg.Quotas = normalizeQuotasConfig(*fc.Quotas)
 		}
 	}
 
@@ -216,6 +240,26 @@ func Load() (*Config, error) {
 		}
 		cfg.RateLimitMax = n
 	}
+	if v := strings.TrimSpace(os.Getenv("QUOTAS_JSON")); v != "" {
+		var q QuotasConfig
+		if err := json.Unmarshal([]byte(v), &q); err != nil {
+			return nil, fmt.Errorf("invalid QUOTAS_JSON: %w", err)
+		}
+		cfg.Quotas = normalizeQuotasConfig(q)
+	}
+	if v := strings.TrimSpace(os.Getenv("QUOTA_WINDOW")); v != "" {
+		cfg.Quotas.Window = v
+	}
+	if v := strings.TrimSpace(os.Getenv("QUOTA_USD")); v != "" {
+		cfg.Quotas.Default.USD = v
+	}
+	if v := strings.TrimSpace(os.Getenv("QUOTA_TOKENS")); v != "" {
+		cfg.Quotas.Default.Tokens = v
+	}
+
+	if err := validateQuotasConfig(&cfg.Quotas); err != nil {
+		return nil, err
+	}
 
 	if cfg.PricingCachePath == "" && cfg.DBPath != "" && cfg.DBPath != ":memory:" && !strings.HasPrefix(cfg.DBPath, "file::memory:") {
 		cfg.PricingCachePath = filepath.Join(filepath.Dir(cfg.DBPath), "pricing-cache.json")
@@ -254,4 +298,95 @@ func ValidateOrigin(raw string) (string, error) {
 		return "", errors.New("use an HTTPS origin, or HTTP on loopback for development")
 	}
 	return u.Scheme + "://" + u.Host, nil
+}
+
+func normalizeQuotasConfig(q QuotasConfig) QuotasConfig {
+	out := QuotasConfig{
+		Window: strings.TrimSpace(q.Window),
+		Default: QuotaLimit{
+			USD:    strings.TrimSpace(q.Default.USD),
+			Tokens: strings.TrimSpace(q.Default.Tokens),
+			Window: strings.TrimSpace(q.Default.Window),
+		},
+	}
+	if len(q.Agents) > 0 {
+		out.Agents = make(map[string]QuotaLimit, len(q.Agents))
+		for k, v := range q.Agents {
+			key := strings.ToLower(strings.TrimSpace(k))
+			if key == "" {
+				continue
+			}
+			out.Agents[key] = QuotaLimit{
+				USD:    strings.TrimSpace(v.USD),
+				Tokens: strings.TrimSpace(v.Tokens),
+				Window: strings.TrimSpace(v.Window),
+			}
+		}
+	}
+	return out
+}
+
+func validateQuotaLimit(label string, lim QuotaLimit) error {
+	if !validWindows[lim.Window] {
+		return fmt.Errorf("invalid quota window for %s: %q", label, lim.Window)
+	}
+	if lim.USD != "" && !quotaUSDRe.MatchString(lim.USD) {
+		return fmt.Errorf("invalid quota usd for %s: %q", label, lim.USD)
+	}
+	if lim.Tokens != "" && !quotaTokRe.MatchString(lim.Tokens) {
+		return fmt.Errorf("invalid quota tokens for %s: %q", label, lim.Tokens)
+	}
+	return nil
+}
+
+func validateQuotasConfig(q *QuotasConfig) error {
+	if q == nil {
+		return nil
+	}
+	q.Window = strings.TrimSpace(q.Window)
+	if !validWindows[q.Window] {
+		return fmt.Errorf("invalid quotas window: %q", q.Window)
+	}
+	if err := validateQuotaLimit("default", q.Default); err != nil {
+		return err
+	}
+	for k, v := range q.Agents {
+		if err := validateQuotaLimit("agent:"+k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ResolveQuota resolves the effective quota limit for a canonical agent ID (or global default when empty).
+func (c *Config) ResolveQuota(agentID string) QuotaLimit {
+	if c == nil {
+		return QuotaLimit{Window: "24h"}
+	}
+	win := c.Quotas.Window
+	if c.Quotas.Default.Window != "" {
+		win = c.Quotas.Default.Window
+	}
+	if win == "" {
+		win = "24h"
+	}
+	lim := QuotaLimit{
+		USD:    c.Quotas.Default.USD,
+		Tokens: c.Quotas.Default.Tokens,
+		Window: win,
+	}
+	if key := strings.ToLower(strings.TrimSpace(agentID)); key != "" && len(c.Quotas.Agents) > 0 {
+		if ag, ok := c.Quotas.Agents[key]; ok {
+			if ag.USD != "" {
+				lim.USD = ag.USD
+			}
+			if ag.Tokens != "" {
+				lim.Tokens = ag.Tokens
+			}
+			if ag.Window != "" {
+				lim.Window = ag.Window
+			}
+		}
+	}
+	return lim
 }

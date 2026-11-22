@@ -129,8 +129,46 @@ export interface SourceAgent {
   iconUrl?: string;
 }
 
+export interface QuotaStatus {
+  window: string;
+  state: 'unconfigured' | 'ok' | 'warning' | 'exceeded' | string;
+  limitUsd?: string;
+  usedUsd: string;
+  remainingUsd?: string;
+  percentUsd?: string;
+  limitTokens?: string;
+  usedTokens: string;
+  remainingTokens?: string;
+  percentTokens?: string;
+}
+
+export interface HookIntegration {
+  id: string;
+  agentId: string;
+  name: string;
+  detected: boolean;
+  installed: boolean;
+  installScope?: string;
+  workspaceConfig: string;
+  globalConfig: string;
+  events: string[];
+  channel: string;
+  nonInterrupting: boolean;
+  supportsInstall: boolean;
+  installCommand: string;
+  description: string;
+  quota: QuotaStatus;
+}
+
+export interface HooksOverview {
+  window: string;
+  globalQuota: QuotaStatus;
+  integrations: HookIntegration[];
+}
+
 export interface SourcesResponse {
   agents: SourceAgent[];
+  hooks?: HooksOverview;
   errors?: Array<{ kind: string; at: string }>;
   errorCount?: number;
   [agentId: string]: unknown;

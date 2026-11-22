@@ -7,5 +7,13 @@
   "gatewayKey": "",
   "pricingSyncEnabled": false,
   "pricingCachePath": "./data/pricing-cache.json",
-  "pricingSources": ["models.dev", "litellm", "openrouter"]
+  "pricingSources": ["models.dev", "litellm", "openrouter"],
+  "quotas": {
+    "window": "24h",
+    "default": {
+      "usd": "",
+      "tokens": ""
+    },
+    "agents": {}
+  }
 }

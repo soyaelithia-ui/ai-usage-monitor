@@ -744,6 +744,57 @@ func (s *Store) RecentErrors() ([]map[string]string, int, error) {
 	return out, count, rows.Err()
 }
 
+// QueryUsageSummary aggregates exact token counts and decimal USD costs for a time window
+// (and optional canonical agentID / sessionID) without allocating 60 buckets or filter dropdowns.
+// It also returns the most recent observed model name within the matching events.
+func (s *Store) QueryUsageSummary(fromMs, toMs int64, agentID, sessionID string) (SummaryMetrics, string, error) {
+	acc := newAccum()
+	if s == nil || s.SQL == nil {
+		return acc.toSummary(agentID, "", ""), "", nil
+	}
+
+	where := "occurred_at>=? AND occurred_at<=?"
+	params := []any{fromMs, toMs}
+	if ag := strings.TrimSpace(agentID); ag != "" {
+		where += " AND (lower(json_extract(data,'$.source'))=lower(?) OR lower(agent)=lower(?))"
+		params = append(params, ag, ag)
+	}
+	if sid := strings.TrimSpace(sessionID); sid != "" {
+		where += " AND json_extract(data,'$.sessionId')=?"
+		params = append(params, sid)
+	}
+
+	rows, err := s.SQL.Query(`SELECT data FROM events WHERE `+where+` ORDER BY occurred_at ASC, id ASC`, params...)
+	if err != nil {
+		return acc.toSummary(agentID, "", ""), "", err
+	}
+	defer rows.Close()
+
+	var lastModel string
+	var lastAgentName string
+	for rows.Next() {
+		var rawData string
+		if err := rows.Scan(&rawData); err != nil {
+			return acc.toSummary(agentID, "", ""), "", err
+		}
+		var e storedEvent
+		if err := json.Unmarshal([]byte(rawData), &e); err != nil {
+			continue
+		}
+		acc.add(&e)
+		if e.Model != "" {
+			lastModel = e.Model
+		}
+		if e.Agent != "" {
+			lastAgentName = e.Agent
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return acc.toSummary(agentID, "", ""), "", err
+	}
+	return acc.toSummary(agentID, lastAgentName, ""), lastModel, nil
+}
+
 // DistinctPricedModels returns only models observed in telemetry events with consistent
 // canonical rate resolution matching pricing.Estimate.
 func (s *Store) DistinctPricedModels() ([]map[string]any, error) {

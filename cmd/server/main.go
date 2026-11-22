@@ -23,6 +23,16 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "hook":
+			runHookCommand(os.Args[2:])
+			return
+		case "hooks":
+			os.Exit(runHooksAdminCommand(os.Args[2:]))
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
@@ -52,7 +62,7 @@ func main() {
 			fmt.Println("Todos los accesos revocados.")
 			return
 		default:
-			log.Fatalf("unknown command %q (expected issue | revoke)", os.Args[1])
+			log.Fatalf("unknown command %q (expected issue | revoke | hook | hooks)", os.Args[1])
 		}
 	}
 

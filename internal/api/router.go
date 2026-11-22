@@ -70,9 +70,10 @@ func NewServer(cfg *config.Config, store *db.Store, broker *sse.Broker, ingestMg
 	r.Get("/icons/*", s.handleStaticAsset)
 	r.Get("/theme-init.js", s.handleStaticAsset)
 
-	// Local bearer-protected ingestion routes (exempt from browser session cookie, origin & UA check)
+	// Local bearer-protected ingestion & HTTP hook routes (exempt from browser session cookie, origin & UA check)
 	r.Post("/api/ingest", s.handleIngest)
 	r.Post("/api/agents/register", s.handleAgentRegister)
+	r.Post("/api/hooks/{agent}", s.handleAgentHookHTTP)
 
 	// Protected routes (fail-closed session cookie required)
 	r.Group(func(pr chi.Router) {
@@ -83,6 +84,7 @@ func NewServer(cfg *config.Config, store *db.Store, broker *sse.Broker, ingestMg
 		pr.Get("/api/usage", s.handleAnalytics)
 		pr.Get("/api/events", s.handleEvents)
 		pr.Get("/api/sources", s.handleSources)
+		pr.Get("/api/hooks", s.handleHooksOverview)
 		pr.Get("/api/discovery", s.handleDiscovery)
 		pr.Get("/api/reconciliation", s.handleReconciliation)
 		pr.Get("/api/pricing", s.handlePricing)
@@ -142,8 +144,10 @@ func (s *Server) perimeterMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		isLocalHook := strings.HasPrefix(r.URL.Path, "/api/hooks/") &&
+			!strings.Contains(strings.TrimPrefix(r.URL.Path, "/api/hooks/"), "/")
 		localIngest := r.Method == http.MethodPost &&
-			(r.URL.Path == "/api/ingest" || r.URL.Path == "/api/agents/register")
+			(r.URL.Path == "/api/ingest" || r.URL.Path == "/api/agents/register" || isLocalHook)
 
 		if status := security.GuardRequest(r, localIngest); status != 0 {
 			writeJSONError(w, status, "Solicitud rechazada")
