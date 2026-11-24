@@ -253,6 +253,87 @@ func TestLocalNetworkAddrAndLANOriginPolicy(t *testing.T) {
 	}
 }
 
+func TestOriginPolicyIsHostAllowed(t *testing.T) {
+	var nilPolicy *OriginPolicy
+	if nilPolicy.IsHostAllowed("127.0.0.1:8080") {
+		t.Fatal("nil OriginPolicy must reject Host")
+	}
+
+	policy, err := BuildOriginPolicyWithOptions(
+		"https://monitor.example.com",
+		[]string{
+			"https://pinned.example.org:8443",
+			"https://*.tailnet.dev",
+			"https://*.port.dev:9443",
+		},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("BuildOriginPolicyWithOptions: %v", err)
+	}
+
+	allowed := []string{
+		"127.0.0.1:8080",
+		"127.0.0.1",
+		"localhost:8080",
+		"LOCALHOST",
+		"192.168.1.71:8080",
+		"10.0.0.5:8080",
+		"172.16.0.1:8080",
+		"169.254.1.5:8080",
+		"[::1]:8080",
+		"[::1]",
+		"::1",
+		"[fd12:3456:789a::1]:8080",
+		"[fe80::1%eth0]:8080",
+		"mybox.local:8080",
+		"MyBox.LOCAL",
+		"monitor.example.com",
+		"monitor.example.com:8080",
+		"Monitor.Example.COM:8080",
+		"pinned.example.org:8443",
+		"node1.tailnet.dev",
+		"node1.tailnet.dev:8080",
+		"box.port.dev:9443",
+	}
+	for _, host := range allowed {
+		if !policy.IsHostAllowed(host) {
+			t.Fatalf("expected Host %q to be allowed", host)
+		}
+	}
+
+	denied := []string{
+		"",
+		"   ",
+		" 127.0.0.1:8080",
+		"127.0.0.1:8080 ",
+		"127.0.0.1\n:8080",
+		"127.0.0.1\x00",
+		"evil-rebind.com:8080",
+		"evil-rebind.com",
+		"203.0.113.10:8080",
+		"0.0.0.0:8080",
+		"user@127.0.0.1:8080",
+		"127.0.0.1:8080/evil",
+		"127.0.0.1:badport",
+		"127.0.0.1:",
+		"[mybox.local]:8080",
+		"foo[bar].local",
+		"localhost.evil.com:8080",
+		".local:8080",
+		"pinned.example.org",
+		"pinned.example.org:9090",
+		"a.b.tailnet.dev",
+		"box.port.dev",
+		"box.port.dev:8080",
+	}
+	for _, host := range denied {
+		if policy.IsHostAllowed(host) {
+			t.Fatalf("expected Host %q to be denied", host)
+		}
+	}
+}
+
 func TestSanitizeIconURLAndRate(t *testing.T) {
 	if u, ok := SanitizeIconURL("/icons/codex.svg"); !ok || u != "/icons/codex.svg" {
 		t.Fatalf("expected valid local icon, got %q %v", u, ok)

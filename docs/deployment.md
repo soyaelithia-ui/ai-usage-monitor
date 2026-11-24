@@ -82,7 +82,9 @@ location / {
 
 Puedes exponer el panel a otros dispositivos de tu red local de dos formas: directamente desde el binario o tras un proxy inverso en la propia LAN.
 
-### Opción A: LAN directa (HTTP o HTTPS)
+### Opción A: LAN directa (HTTP)
+
+Al ejecutar el binario directamente, el servidor sirve únicamente **HTTP plano** mediante `ListenAndServe()` (para usar HTTPS es necesario terminar TLS delante con un proxy inverso, como se muestra en la Opción B).
 
 Para escuchar en todas las interfaces o en una IP privada concreta de tu red local:
 
@@ -110,7 +112,7 @@ Comportamiento de orígenes y cookies en LAN directa:
 
 - Si `bindAddr` no es loopback ni dirección no especificada (`0.0.0.0` / `::`) y no defines `origin`, el servidor toma `http://<bindAddr>:<port>` como origen principal por defecto (con `0.0.0.0` mantiene `http://127.0.0.1:<port>`).
 - Cualquier `bindAddr` no-loopback o `authMode: "local"` activa automáticamente `allowLan: true`. Con `allowLan: true`, `Origin` permite peticiones HTTP/HTTPS procedentes de subredes privadas/locales (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16`, `fc00::/7`, `fe80::/10`, loopback) y nombres mDNS `*.local`. Los orígenes externos (p. ej. `https://evil.com`) y las peticiones `Sec-Fetch-Site: cross-site` siguen rechazándose con `403`.
-- **Cookies en LAN HTTP vs HTTPS**: los navegadores rechazan cookies con prefijo `__Host-` o atributo `Secure` sobre `http://` no-loopback. Por ello, cuando `allowLan` está activo y la petición llega por HTTP plano no-loopback (p. ej. `http://192.168.1.50:8080` o `http://monitor.local:8080`), el servidor emite la cookie `usage-monitor` (`Secure: false`, `HttpOnly`, `SameSite=Strict`). En HTTPS o loopback HTTP (`127.0.0.1`, `localhost`, `::1`) mantiene `__Host-usage-monitor` (`Secure: true`).
+- **Cookies en LAN HTTP vs HTTPS**: los navegadores rechazan cookies con prefijo `__Host-` o atributo `Secure` sobre `http://` no-loopback. Por ello, cuando `allowLan` está activo y la petición llega por HTTP plano no-loopback (p. ej. `http://192.168.1.50:8080` o `http://monitor.local:8080`), el servidor emite la cookie `usage-monitor` (`Secure: false`, `HttpOnly`, `SameSite=Strict`). En HTTPS (tras un proxy inverso como en la Opción B) o en loopback HTTP (`127.0.0.1`, `localhost`, `::1`) mantiene `__Host-usage-monitor` (`Secure: true`).
 - **Nota de transporte**: HTTP plano en LAN no cifra tokens ni cookies en tránsito. Usa HTTPS (opción B) si compartes la red Wi-Fi/LAN con dispositivos no confiables.
 - Si utilizas [ops/systemd/ai-usage-monitor.service](../ops/systemd/ai-usage-monitor.service), `RestrictAddressFamilies=AF_INET AF_INET6` ya permite sockets IPv4/IPv6 en LAN; restringe igualmente el puerto `8080` en el firewall (`ufw`/`nftables`) a tu subred local.
 
@@ -165,19 +167,25 @@ Para despliegues declarativos (sin ejecutar `issue` tras crear la base de datos)
 
 - `accessToken` (`ACCESS_TOKEN`) es reutilizable y permanece válido mientras siga en la configuración; al canjearse en `/auth/exchange` crea una sesión con duración `sessionTtl` (`SESSION_TTL`), o `365d` por defecto si `sessionTtl` está vacío.
 - `sessionTtl` (`SESSION_TTL`) también define la duración de sesión por defecto para tokens emitidos sin `--ttl` ni `--permanent`.
-- Al rotar o eliminar `accessToken` de la configuración dejan de aceptarse nuevos canjes; para invalidar de inmediato sesiones ya abiertas, ejecuta `revoke` o elimina `machine.key`.
+- Tanto `backend.json` y las variables de entorno (`config.LoadWithOverrides`) como `machine.key` (`security.NewSealer`) se leen únicamente al arranque. Por ello, rotar o eliminar `accessToken` de `backend.json` / `ACCESS_TOKEN`, o eliminar `machine.key`, **requiere reiniciar el servidor** para surtir efecto; para invalidar de inmediato sesiones ya abiertas en SQLite puedes ejecutar `revoke` (o eliminar `machine.key` y reiniciar el servicio).
 
 ## Modo sin token en red local (`AUTH_MODE=local`)
 
 Para entornos privados donde no quieras introducir un token desde la red local:
 
 ```sh
-# Solo accesible desde la máquina local (127.0.0.1)
+# Activa el modo sin token conservando el bindAddr / BIND_ADDR configurado
+# (por defecto 127.0.0.1; si backend.json o BIND_ADDR fijan p. ej. 0.0.0.0, lo mantiene)
 ./bin/ai-usage-monitor --local
+
+# Fuerza escucha únicamente en loopback aunque bindAddr / BIND_ADDR apunten a otra IP
+./bin/ai-usage-monitor --local --bind 127.0.0.1
 
 # Accesible desde toda la red local (0.0.0.0) sin pantalla /access
 ./bin/ai-usage-monitor --lan --local
 ```
+
+Ten en cuenta que `--local` (y `--no-token`) conserva cualquier `bindAddr` / `BIND_ADDR` configurado (`127.0.0.1` por defecto, o p. ej. `0.0.0.0` si se definió en `backend.json` o en el entorno), salvo que pases explícitamente `--bind 127.0.0.1`.
 
 O mediante configuración/variables de entorno (`AUTH_MODE=local`, `BIND_ADDR=0.0.0.0`; también se normalizan `"lan"`, `"no-token"` y `"local-no-token"` a `"local"`):
 
@@ -213,7 +221,7 @@ sudo -u usage-monitor USAGE_MONITOR_CONFIG=/etc/ai-usage-monitor/backend.json /u
 sudo -u usage-monitor USAGE_MONITOR_CONFIG=/etc/ai-usage-monitor/backend.json /usr/local/bin/ai-usage-monitor revoke
 ```
 
-- `issue` (sin flags) revoca cualquier acceso o sesión anterior y genera un token de un solo uso válido durante 8 horas (usa `--permanent`, `--reusable`, `--ttl` o `--keep` según necesidad).
+- `issue` (sin `--keep`) revoca únicamente los tokens y sesiones almacenados en SQLite (`accesses`/`sessions`) y genera un token de un solo uso válido durante 8 horas (usa `--permanent`, `--reusable`, `--ttl` o `--keep` según necesidad); **no** deshabilita un `accessToken` estático configurado en `backend.json` o `ACCESS_TOKEN` (para ello debes rotarlo o eliminarlo y reiniciar el servidor, además de ejecutar `revoke` —o eliminar `machine.key` y reiniciar— para cerrar sesiones activas).
 - `revoke` elimina todos los tokens emitidos en SQLite, cierra sesiones activas y revoca de inmediato los flujos SSE (`event: expired`).
 - Borrar `/var/lib/ai-usage-monitor/machine.key` y reiniciar el servicio invalida de inmediato todas las sesiones y tokens sellados.
 - Usa `sqlite3 /var/lib/ai-usage-monitor/usage.db ".backup '/ruta/backup.db'"` para copias consistentes con WAL activo.

@@ -95,9 +95,15 @@ func NewServer(cfg *config.Config, store *db.Store, broker *sse.Broker, ingestMg
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
-		if s.isLocalAuthMode() && !security.IsLocalNetworkAddr(r.RemoteAddr) {
-			writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
-			return
+		if s.isLocalAuthMode() {
+			if !security.IsLocalNetworkAddr(r.RemoteAddr) {
+				writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
+				return
+			}
+			if !s.OriginPolicy.IsHostAllowed(r.Host) {
+				writeJSONError(w, http.StatusForbidden, "Host no permitido")
+				return
+			}
 		}
 		// Fail closed on any unknown path: require session if not public
 		if _, ok := s.authenticate(r); !ok {
@@ -163,9 +169,15 @@ func (s *Server) perimeterMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if s.isLocalAuthMode() && !security.IsLocalNetworkAddr(r.RemoteAddr) {
-			writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
-			return
+		if s.isLocalAuthMode() {
+			if !security.IsLocalNetworkAddr(r.RemoteAddr) {
+				writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
+				return
+			}
+			if !s.OriginPolicy.IsHostAllowed(r.Host) {
+				writeJSONError(w, http.StatusForbidden, "Host no permitido")
+				return
+			}
 		}
 
 		if !localIngest {

@@ -893,3 +893,181 @@ func TestConfigLoadingDurationsAuthModeAndLAN(t *testing.T) {
 		t.Fatal("expected matching ACCESS_TOKEN and INGEST_KEY to fail")
 	}
 }
+
+func TestLocalModeDNSRebindingHostRejection(t *testing.T) {
+	now := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "rebinding.db")
+	store, err := db.Open(dbPath, "", func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer store.Close()
+
+	cfg := &config.Config{
+		Port:           8080,
+		BindAddr:       "0.0.0.0",
+		AuthMode:       "local",
+		AllowLAN:       true,
+		DBPath:         dbPath,
+		Origin:         "http://127.0.0.1:8080",
+		AllowedOrigins: []string{"https://dashboard.example.com"},
+		RateLimitMax:   600,
+	}
+	srv, err := NewServer(cfg, store, sse.NewBroker(), nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+
+	// DNS rebinding attempts from local client IPs with evil Host must fail closed with 403.
+	for _, remoteAddr := range []string{"127.0.0.1:50000", "192.168.1.50:51234"} {
+		for _, path := range []string{"/", "/auth/session", "/api/usage", "/health", "/api/missing"} {
+			req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080"+path, nil)
+			req.RemoteAddr = remoteAddr
+			req.Host = "evil-rebind.com:8080"
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("remoteAddr=%s host=evil-rebind.com:8080 path=%s got %d, want 403", remoteAddr, path, rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "Host no permitido") {
+				t.Fatalf("expected Host no permitido error, got %q", rec.Body.String())
+			}
+		}
+	}
+
+	// Legitimate local network, loopback, IPv6, mDNS, and configured origin Hosts succeed.
+	for _, host := range []string{
+		"127.0.0.1:8080",
+		"192.168.1.71:8080",
+		"[::1]:8080",
+		"mybox.local:8080",
+		"dashboard.example.com:8080",
+	} {
+		for _, remoteAddr := range []string{"127.0.0.1:50000", "192.168.1.50:51234"} {
+			req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/api/usage", nil)
+			req.RemoteAddr = remoteAddr
+			req.Host = host
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("remoteAddr=%s host=%s /api/usage got %d, want 200 (%s)", remoteAddr, host, rec.Code, rec.Body.String())
+			}
+		}
+	}
+}
+
+func TestDefaultSingleUseTokenPreservesOriginalExpiry(t *testing.T) {
+	store, srv, clock, cleanup := newTestEnv(t)
+	defer cleanup()
+
+	t0 := clock.Now()
+	wantExp := t0.Add(db.SessionTTL).UTC().Format("2006-01-02T15:04:05.000Z")
+
+	// Mint two default 8h single-use tokens at t0.
+	issuedHTTP, err := store.Issue()
+	if err != nil {
+		t.Fatalf("Issue HTTP token: %v", err)
+	}
+	issuedDirect, err := store.IssueWithOptions(db.IssueOptions{KeepExisting: true})
+	if err != nil {
+		t.Fatalf("Issue direct token: %v", err)
+	}
+
+	// Advance clock by 4 hours before exchanging.
+	clock.Advance(4 * time.Hour)
+
+	// 1. Direct Store.Exchange at t0 + 4h must expire at t0 + 8h (not t0 + 12h).
+	directSess, err := store.Exchange(issuedDirect.Token)
+	if err != nil || directSess == nil {
+		t.Fatalf("Store.Exchange failed: sess=%+v err=%v", directSess, err)
+	}
+	if directSess.ExpiresMs != t0.Add(db.SessionTTL).UnixMilli() || directSess.ExpiresAt != wantExp {
+		t.Fatalf("direct exchange expires = %d (%s), want %d (%s)", directSess.ExpiresMs, directSess.ExpiresAt, t0.Add(db.SessionTTL).UnixMilli(), wantExp)
+	}
+
+	// 2. HTTP POST /auth/exchange at t0 + 4h must expire at t0 + 8h (not t0 + 12h).
+	body, _ := json.Marshal(map[string]string{"token": issuedHTTP.Token})
+	exReq := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8080/auth/exchange", bytes.NewReader(body))
+	exReq.Header.Set("Origin", "http://127.0.0.1:8080")
+	exReq.Header.Set("Content-Type", "application/json")
+	exRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(exRec, exReq)
+	if exRec.Code != http.StatusOK {
+		t.Fatalf("POST /auth/exchange failed: %d (%s)", exRec.Code, exRec.Body.String())
+	}
+	var out struct {
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.NewDecoder(exRec.Body).Decode(&out); err != nil {
+		t.Fatalf("decode exchange response: %v", err)
+	}
+	if out.ExpiresAt != wantExp {
+		t.Fatalf("HTTP exchange expiresAt = %q, want %q (t0 + 8h, not t0 + 12h)", out.ExpiresAt, wantExp)
+	}
+	var sessCookie *http.Cookie
+	for _, c := range exRec.Result().Cookies() {
+		if c.Name == SessionCookieName {
+			sessCookie = c
+		}
+	}
+	if sessCookie == nil {
+		t.Fatal("missing session cookie")
+	}
+
+	// Still valid at t0 + 7h59m.
+	clock.Advance(3*time.Hour + 59*time.Minute)
+	validReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/auth/session", nil)
+	validReq.AddCookie(sessCookie)
+	validRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(validRec, validReq)
+	if validRec.Code != http.StatusOK {
+		t.Fatalf("expected session valid at t0+7h59m, got %d", validRec.Code)
+	}
+
+	// Expired at t0 + 8h01m.
+	clock.Advance(2 * time.Minute)
+	expiredReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/auth/session", nil)
+	expiredReq.AddCookie(sessCookie)
+	expiredRec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(expiredRec, expiredReq)
+	if expiredRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected session expired at t0+8h01m (401), got %d", expiredRec.Code)
+	}
+}
+
+func TestSubMillisecondTTLRejected(t *testing.T) {
+	for _, subMs := range []string{"500us", "999us", "1ns", "0.5ms", "0.000000001d"} {
+		if _, err := config.ParseDuration(subMs); err == nil {
+			t.Fatalf("expected ParseDuration(%q) to reject sub-millisecond duration", subMs)
+		}
+	}
+	if d, err := config.ParseDuration("1ms"); err != nil || d != time.Millisecond {
+		t.Fatalf("ParseDuration(1ms) = %v, %v", d, err)
+	}
+
+	store, _, clock, cleanup := newTestEnv(t)
+	defer cleanup()
+
+	for _, badTTL := range []time.Duration{500 * time.Microsecond, -time.Millisecond} {
+		if _, err := store.IssueWithOptions(db.IssueOptions{TTL: badTTL}); err == nil {
+			t.Fatalf("expected IssueWithOptions(TTL=%v) to fail", badTTL)
+		}
+		if _, err := store.CreateSession(badTTL); err == nil {
+			t.Fatalf("expected CreateSession(ttl=%v) to fail", badTTL)
+		}
+	}
+
+	if _, err := store.IssueWithOptions(db.IssueOptions{TTL: time.Millisecond}); err != nil {
+		t.Fatalf("expected IssueWithOptions(TTL=1ms) to succeed, got %v", err)
+	}
+	sess1ms, err := store.CreateSession(time.Millisecond)
+	if err != nil || sess1ms.ExpiresMs != clock.Now().Add(time.Millisecond).UnixMilli() {
+		t.Fatalf("CreateSession(1ms) = %+v, %v", sess1ms, err)
+	}
+	sessDefault, err := store.CreateSession(0)
+	if err != nil || sessDefault.ExpiresMs != clock.Now().Add(db.SessionTTL).UnixMilli() {
+		t.Fatalf("CreateSession(0) = %+v, %v", sessDefault, err)
+	}
+}

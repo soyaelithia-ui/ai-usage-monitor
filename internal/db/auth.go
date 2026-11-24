@@ -48,8 +48,8 @@ func (s *Store) Issue() (*IssuedToken, error) {
 
 // IssueWithOptions mints an access token with configurable permanence, reusability, TTL, and session preservation.
 func (s *Store) IssueWithOptions(opts IssueOptions) (*IssuedToken, error) {
-	if opts.TTL < 0 {
-		return nil, errors.New("token ttl must be positive")
+	if opts.TTL < 0 || (opts.TTL > 0 && opts.TTL < time.Millisecond) {
+		return nil, errors.New("token ttl must be at least 1ms")
 	}
 	token, err := security.GenerateSecret()
 	if err != nil {
@@ -197,37 +197,38 @@ func (s *Store) ExchangeWithDefaultTTL(token string, defaultTTL time.Duration) (
 	defer func() { _ = tx.Rollback() }()
 
 	var (
-		permanentInt int
-		sessionTTLMs int64
+		accessExpiresMs int64
+		permanentInt    int
+		sessionTTLMs    int64
 	)
 
 	// Single-use tokens must be consumed atomically.
 	err = tx.QueryRow(
 		`UPDATE accesses SET used=1 WHERE hash=? AND reusable=0 AND used=0 AND (expires=0 OR expires>?)
-		 RETURNING permanent, session_ttl_ms`,
+		 RETURNING expires, permanent, session_ttl_ms`,
 		sealedToken, nowMs,
-	).Scan(&permanentInt, &sessionTTLMs)
+	).Scan(&accessExpiresMs, &permanentInt, &sessionTTLMs)
 	if errors.Is(err, sql.ErrNoRows) {
 		// Migrate legacy plain-SHA256 single-use access row once if present.
 		err = tx.QueryRow(
 			`UPDATE accesses SET used=1, hash=? WHERE hash=? AND reusable=0 AND used=0 AND (expires=0 OR expires>?)
-			 RETURNING permanent, session_ttl_ms`,
+			 RETURNING expires, permanent, session_ttl_ms`,
 			sealedToken, legacyToken, nowMs,
-		).Scan(&permanentInt, &sessionTTLMs)
+		).Scan(&accessExpiresMs, &permanentInt, &sessionTTLMs)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		// Reusable/permanent tokens are validated without setting used=1.
 		err = tx.QueryRow(
-			`SELECT permanent, session_ttl_ms FROM accesses
+			`SELECT expires, permanent, session_ttl_ms FROM accesses
 			 WHERE hash=? AND reusable=1 AND used=0 AND (expires=0 OR expires>?)`,
 			sealedToken, nowMs,
-		).Scan(&permanentInt, &sessionTTLMs)
+		).Scan(&accessExpiresMs, &permanentInt, &sessionTTLMs)
 		if errors.Is(err, sql.ErrNoRows) {
 			err = tx.QueryRow(
 				`UPDATE accesses SET hash=? WHERE hash=? AND reusable=1 AND used=0 AND (expires=0 OR expires>?)
-				 RETURNING permanent, session_ttl_ms`,
+				 RETURNING expires, permanent, session_ttl_ms`,
 				sealedToken, legacyToken, nowMs,
-			).Scan(&permanentInt, &sessionTTLMs)
+			).Scan(&accessExpiresMs, &permanentInt, &sessionTTLMs)
 		}
 	}
 	if errors.Is(err, sql.ErrNoRows) {
@@ -237,19 +238,21 @@ func (s *Store) ExchangeWithDefaultTTL(token string, defaultTTL time.Duration) (
 		return nil, err
 	}
 
-	var effectiveTTLMs int64
+	var sessExpiresMs int64
 	switch {
 	case sessionTTLMs > 0:
-		effectiveTTLMs = sessionTTLMs
+		sessExpiresMs = nowMs + sessionTTLMs
 	case defaultTTL > 0:
-		effectiveTTLMs = defaultTTL.Milliseconds()
+		sessExpiresMs = nowMs + defaultTTL.Milliseconds()
 	case permanentInt != 0:
-		effectiveTTLMs = PermanentSessionTTL.Milliseconds()
+		sessExpiresMs = nowMs + PermanentSessionTTL.Milliseconds()
+	case accessExpiresMs > 0:
+		sessExpiresMs = accessExpiresMs
 	default:
-		effectiveTTLMs = SessionTTL.Milliseconds()
+		sessExpiresMs = nowMs + SessionTTL.Milliseconds()
 	}
 
-	sess, err := s.insertSessionTx(tx, nowMs+effectiveTTLMs, permanentInt != 0)
+	sess, err := s.insertSessionTx(tx, sessExpiresMs, permanentInt != 0)
 	if err != nil {
 		return nil, err
 	}
@@ -259,9 +262,12 @@ func (s *Store) ExchangeWithDefaultTTL(token string, defaultTTL time.Duration) (
 	return sess, nil
 }
 
-// CreateSession creates a new authenticated session with the given TTL (defaulting to SessionTTL if <= 0).
+// CreateSession creates a new authenticated session with the given TTL (defaulting to SessionTTL if 0).
 func (s *Store) CreateSession(ttl time.Duration) (*SessionInfo, error) {
-	if ttl <= 0 {
+	if ttl < 0 || (ttl > 0 && ttl < time.Millisecond) {
+		return nil, errors.New("session ttl must be at least 1ms")
+	}
+	if ttl == 0 {
 		ttl = SessionTTL
 	}
 	nowMs := s.NowFn().UnixMilli()

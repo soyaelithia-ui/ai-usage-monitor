@@ -431,6 +431,9 @@ func ParseDuration(raw string) (time.Duration, error) {
 		if d <= 0 {
 			return 0, errors.New("duration must be positive")
 		}
+		if d < time.Millisecond {
+			return 0, errors.New("duration must be at least 1ms")
+		}
 		return d, nil
 	}
 	var total time.Duration
@@ -510,6 +513,9 @@ func ParseDuration(raw string) (time.Duration, error) {
 	}
 	if total <= 0 {
 		return 0, errors.New("duration must be positive")
+	}
+	if total < time.Millisecond {
+		return 0, errors.New("duration must be at least 1ms")
 	}
 	return total, nil
 }

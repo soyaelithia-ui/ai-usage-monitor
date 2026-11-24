@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 type wildcardRule struct {
@@ -220,6 +221,93 @@ func (p *OriginPolicy) IsOriginAllowed(candidate string) bool {
 	if p.allowLAN && IsLocalNetworkOrigin(candidate) {
 		return true
 	}
+	return false
+}
+
+func isValidPort(port string) bool {
+	if port == "" || len(port) > 5 {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(port); i++ {
+		ch := port[i]
+		if ch < '0' || ch > '9' {
+			return false
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
+// IsHostAllowed validates an HTTP Host header against local-network hosts and configured exact/wildcard origins.
+func (p *OriginPolicy) IsHostAllowed(hostHeader string) bool {
+	if p == nil || hostHeader == "" {
+		return false
+	}
+	for _, r := range hostHeader {
+		if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	if strings.ContainsAny(hostHeader, "@/\\?#") {
+		return false
+	}
+
+	var reqPort string
+	if h, port, err := net.SplitHostPort(hostHeader); err == nil {
+		if !isValidPort(port) || strings.ContainsAny(h, "[]") {
+			return false
+		}
+		reqPort = port
+	}
+
+	hostname := extractHost(hostHeader)
+	if hostname == "" {
+		return false
+	}
+	if strings.ContainsAny(hostHeader, "[]") {
+		if strings.ContainsAny(hostname, "[]") {
+			return false
+		}
+		addr, err := netip.ParseAddr(hostname)
+		if err != nil || !addr.Is6() {
+			return false
+		}
+	}
+
+	if IsLocalNetworkHost(hostname) {
+		return true
+	}
+
+	for exactOrigin := range p.exact {
+		u, err := url.Parse(exactOrigin)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		if u.Port() == "" {
+			if strings.EqualFold(hostname, u.Hostname()) {
+				return true
+			}
+		} else if strings.EqualFold(hostHeader, u.Host) {
+			return true
+		}
+	}
+
+	lowerHost := strings.ToLower(hostname)
+	for _, w := range p.wildcards {
+		if w.port != "" && reqPort != w.port {
+			continue
+		}
+		suffix := strings.ToLower(w.suffix)
+		if !strings.HasSuffix(lowerHost, suffix) {
+			continue
+		}
+		label := strings.TrimSuffix(lowerHost, suffix)
+		if label != "" && !strings.Contains(label, ".") {
+			return true
+		}
+	}
+
 	return false
 }
 
