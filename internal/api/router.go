@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	SessionCookieName = "__Host-usage-monitor"
-	MaxJSONBodyBytes  = 64 * 1024
+	SessionCookieName    = "__Host-usage-monitor"
+	LANSessionCookieName = "usage-monitor"
+	MaxJSONBodyBytes     = 64 * 1024
 )
 
 // Server holds dependencies for HTTP API and SSE handlers.
@@ -36,7 +37,7 @@ type Server struct {
 
 // NewServer constructs the HTTP router with full security perimeter middleware.
 func NewServer(cfg *config.Config, store *db.Store, broker *sse.Broker, ingestMgr *ingest.Manager, staticFS fs.FS) (*Server, error) {
-	originPolicy, err := security.BuildOriginPolicy(cfg.Origin, cfg.AllowedOrigins)
+	originPolicy, err := security.BuildOriginPolicyWithOptions(cfg.Origin, cfg.AllowedOrigins, isLANEnabled(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +69,7 @@ func NewServer(cfg *config.Config, store *db.Store, broker *sse.Broker, ingestMg
 	r.Get("/assets/*", s.handleStaticAsset)
 	r.Get("/fonts/*", s.handleStaticAsset)
 	r.Get("/icons/*", s.handleStaticAsset)
+	r.Get("/favicon.svg", s.handleStaticAsset)
 	r.Get("/theme-init.js", s.handleStaticAsset)
 
 	// Local bearer-protected ingestion & HTTP hook routes (exempt from browser session cookie, origin & UA check)
@@ -93,9 +95,13 @@ func NewServer(cfg *config.Config, store *db.Store, broker *sse.Broker, ingestMg
 	})
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		if s.isLocalAuthMode() && !security.IsLocalNetworkAddr(r.RemoteAddr) {
+			writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
+			return
+		}
 		// Fail closed on any unknown path: require session if not public
 		if _, ok := s.authenticate(r); !ok {
-			s.clearSessionCookie(w)
+			s.clearSessionCookie(w, r)
 			writeJSONError(w, http.StatusUnauthorized, "Acceso caducado o no iniciado")
 			return
 		}
@@ -128,6 +134,9 @@ func (s *Server) runSessionSweep() {
 			return
 		case <-ticker.C:
 			for _, hash := range s.Broker.ActiveSessionHashes() {
+				if hash == LocalLANSessionHash {
+					continue
+				}
 				if !s.Store.IsSessionHashActive(hash) {
 					s.Broker.RevokeSession(hash)
 				}
@@ -151,6 +160,11 @@ func (s *Server) perimeterMiddleware(next http.Handler) http.Handler {
 
 		if status := security.GuardRequest(r, localIngest); status != 0 {
 			writeJSONError(w, status, "Solicitud rechazada")
+			return
+		}
+
+		if s.isLocalAuthMode() && !security.IsLocalNetworkAddr(r.RemoteAddr) {
+			writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
 			return
 		}
 

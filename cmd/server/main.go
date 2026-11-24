@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,17 +27,60 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "hook":
-			runHookCommand(os.Args[2:])
-			return
-		case "hooks":
-			os.Exit(runHooksAdminCommand(os.Args[2:]))
-		}
+	var subcmd string
+	var subArgs []string
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		subcmd = os.Args[1]
+		subArgs = os.Args[2:]
 	}
 
-	cfg, err := config.Load()
+	switch subcmd {
+	case "hook":
+		runHookCommand(subArgs)
+		return
+	case "hooks":
+		os.Exit(runHooksAdminCommand(subArgs))
+	case "issue", "revoke":
+		cfg, err := config.Load()
+		if err != nil {
+			log.Fatalf("config error: %v", err)
+		}
+		store, err := db.Open(cfg.DBPath, cfg.MachineKeyPath, nil)
+		if err != nil {
+			log.Fatalf("database error: %v", err)
+		}
+		defer store.Close()
+
+		if subcmd == "issue" {
+			opts, err := parseIssueOptions(subArgs)
+			if err != nil {
+				log.Fatalf("issue flags error: %v", err)
+			}
+			tok, err := store.IssueWithOptions(opts)
+			if err != nil {
+				log.Fatalf("issue token failed: %v", err)
+			}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			_ = enc.Encode(tok)
+			return
+		}
+		if err := store.Revoke(); err != nil {
+			log.Fatalf("revoke failed: %v", err)
+		}
+		fmt.Println("Todos los accesos revocados.")
+		return
+	case "":
+		// Server startup mode (optionally with --lan, --local/--no-token, --bind, --port).
+	default:
+		log.Fatalf("unknown command %q (expected issue | revoke | hook | hooks)", subcmd)
+	}
+
+	ov, err := parseServerOverrides(os.Args[1:])
+	if err != nil {
+		log.Fatalf("flag error: %v", err)
+	}
+	cfg, err := config.LoadWithOverrides(ov)
 	if err != nil {
 		log.Fatalf("config error: %v", err)
 	}
@@ -43,28 +90,6 @@ func main() {
 		log.Fatalf("database error: %v", err)
 	}
 	defer store.Close()
-
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "issue":
-			tok, err := store.Issue()
-			if err != nil {
-				log.Fatalf("issue token failed: %v", err)
-			}
-			enc := json.NewEncoder(os.Stdout)
-			enc.SetIndent("", "  ")
-			_ = enc.Encode(tok)
-			return
-		case "revoke":
-			if err := store.Revoke(); err != nil {
-				log.Fatalf("revoke failed: %v", err)
-			}
-			fmt.Println("Todos los accesos revocados.")
-			return
-		default:
-			log.Fatalf("unknown command %q (expected issue | revoke | hook | hooks)", os.Args[1])
-		}
-	}
 
 	if cfg.IngestKey == "" {
 		if gen, err := security.GenerateSecret(); err == nil {
@@ -86,7 +111,7 @@ func main() {
 		log.Fatalf("server init error: %v", err)
 	}
 
-	addr := fmt.Sprintf("%s:%d", cfg.BindAddr, cfg.Port)
+	addr := net.JoinHostPort(cfg.BindAddr, strconv.Itoa(cfg.Port))
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           srv.Handler,
@@ -94,7 +119,7 @@ func main() {
 	}
 
 	mgr.Start()
-	log.Printf("AI Usage Monitor ready on http://%s (db=%s)", addr, cfg.DBPath)
+	log.Printf("AI Usage Monitor ready on http://%s (auth=%s, lan=%v, db=%s)", addr, cfg.AuthMode, cfg.AllowLAN, cfg.DBPath)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -121,4 +146,74 @@ func main() {
 	_ = httpServer.Shutdown(ctx)
 	mgr.Stop()
 	srv.Close()
+}
+
+func parseIssueOptions(args []string) (db.IssueOptions, error) {
+	fs := flag.NewFlagSet("issue", flag.ContinueOnError)
+	permanentFlag := fs.Bool("permanent", false, "Issue a permanent reusable token with 365d default session TTL")
+	reusableFlag := fs.Bool("reusable", false, "Allow multiple exchanges until token expiry")
+	ttlFlag := fs.String("ttl", "", "Access/session duration (e.g. 24h, 30d, 365d)")
+	keepFlag := fs.Bool("keep", false, "Keep existing access tokens and active sessions")
+	if err := fs.Parse(args); err != nil {
+		return db.IssueOptions{}, err
+	}
+	if fs.NArg() > 0 {
+		return db.IssueOptions{}, fmt.Errorf("unexpected arguments: %v", fs.Args())
+	}
+	var ttl time.Duration
+	if strings.TrimSpace(*ttlFlag) != "" {
+		d, err := config.ParseDuration(*ttlFlag)
+		if err != nil {
+			return db.IssueOptions{}, fmt.Errorf("invalid --ttl: %w", err)
+		}
+		ttl = d
+	}
+	return db.IssueOptions{
+		Permanent:    *permanentFlag,
+		Reusable:     *reusableFlag,
+		TTL:          ttl,
+		KeepExisting: *keepFlag,
+	}, nil
+}
+
+func parseServerOverrides(args []string) (config.Overrides, error) {
+	fs := flag.NewFlagSet("ai-usage-monitor", flag.ContinueOnError)
+	lanFlag := fs.Bool("lan", false, "Bind to 0.0.0.0 and allow local-network origins")
+	localFlag := fs.Bool("local", false, "Enable tokenless mode restricted to local-network clients")
+	noTokenFlag := fs.Bool("no-token", false, "Alias for --local")
+	bindFlag := fs.String("bind", "", "Bind IP address override")
+	portFlag := fs.Int("port", 0, "HTTP port override")
+	if err := fs.Parse(args); err != nil {
+		return config.Overrides{}, err
+	}
+	if fs.NArg() > 0 {
+		return config.Overrides{}, fmt.Errorf("unexpected argument %q (expected subcommand issue | revoke | hook | hooks)", fs.Arg(0))
+	}
+
+	var ov config.Overrides
+	visited := make(map[string]bool)
+	fs.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+
+	if *lanFlag {
+		ov.AllowLAN = true
+		if !visited["bind"] {
+			ov.BindAddr = "0.0.0.0"
+			ov.HasBind = true
+		}
+	}
+	if *localFlag || *noTokenFlag {
+		ov.AuthMode = "local"
+		ov.AllowLAN = true
+	}
+	if visited["bind"] {
+		ov.BindAddr = *bindFlag
+		ov.HasBind = true
+	}
+	if visited["port"] {
+		ov.Port = *portFlag
+		ov.HasPort = true
+	}
+	return ov, nil
 }

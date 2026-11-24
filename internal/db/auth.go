@@ -10,14 +10,25 @@ import (
 
 const (
 	SessionTTL           = 8 * time.Hour
+	PermanentSessionTTL  = 365 * 24 * time.Hour
 	ExchangeMaxAttempts  = 20
 	ExchangeAttemptWinMs = 60_000
 )
 
-// IssuedToken represents a newly minted one-time access token.
+// IssuedToken represents a newly minted access token.
 type IssuedToken struct {
 	Token     string `json:"token"`
 	ExpiresAt string `json:"expiresAt"`
+	Permanent bool   `json:"permanent,omitempty"`
+	Reusable  bool   `json:"reusable,omitempty"`
+}
+
+// IssueOptions configures optional attributes for minted access tokens.
+type IssueOptions struct {
+	Permanent    bool
+	Reusable     bool
+	TTL          time.Duration
+	KeepExisting bool
 }
 
 // SessionInfo represents an active authenticated session.
@@ -27,16 +38,56 @@ type SessionInfo struct {
 	CSRF        string
 	ExpiresMs   int64
 	ExpiresAt   string
+	Permanent   bool
 }
 
 // Issue revokes all previous accesses/sessions and issues a fresh 8h one-time token.
 func (s *Store) Issue() (*IssuedToken, error) {
+	return s.IssueWithOptions(IssueOptions{})
+}
+
+// IssueWithOptions mints an access token with configurable permanence, reusability, TTL, and session preservation.
+func (s *Store) IssueWithOptions(opts IssueOptions) (*IssuedToken, error) {
+	if opts.TTL < 0 {
+		return nil, errors.New("token ttl must be positive")
+	}
 	token, err := security.GenerateSecret()
 	if err != nil {
 		return nil, err
 	}
+
 	now := s.NowFn()
-	expiresMs := now.Add(SessionTTL).UnixMilli()
+	var (
+		expiresMs    int64
+		expiresAt    string
+		reusableInt  int
+		permanentInt int
+		sessionTTLMs int64
+	)
+
+	if opts.Permanent {
+		reusableInt = 1
+		permanentInt = 1
+		expiresMs = 0
+		expiresAt = "never"
+		ttl := opts.TTL
+		if ttl <= 0 {
+			ttl = PermanentSessionTTL
+		}
+		sessionTTLMs = ttl.Milliseconds()
+	} else {
+		if opts.Reusable {
+			reusableInt = 1
+		}
+		ttl := opts.TTL
+		if ttl <= 0 {
+			ttl = SessionTTL
+		} else {
+			sessionTTLMs = ttl.Milliseconds()
+		}
+		expiresMs = now.Add(ttl).UnixMilli()
+		expiresAt = time.UnixMilli(expiresMs).UTC().Format("2006-01-02T15:04:05.000Z")
+	}
 
 	tx, err := s.SQL.Begin()
 	if err != nil {
@@ -44,13 +95,18 @@ func (s *Store) Issue() (*IssuedToken, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.Exec(`DELETE FROM accesses`); err != nil {
-		return nil, err
+	if !opts.KeepExisting {
+		if _, err := tx.Exec(`DELETE FROM accesses`); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`DELETE FROM sessions`); err != nil {
+			return nil, err
+		}
 	}
-	if _, err := tx.Exec(`DELETE FROM sessions`); err != nil {
-		return nil, err
-	}
-	if _, err := tx.Exec(`INSERT INTO accesses(hash, expires, used) VALUES (?, ?, 0)`, s.Sealer.Seal(token), expiresMs); err != nil {
+	if _, err := tx.Exec(
+		`INSERT INTO accesses(hash, expires, used, reusable, permanent, session_ttl_ms) VALUES (?, ?, 0, ?, ?, ?)`,
+		s.Sealer.Seal(token), expiresMs, reusableInt, permanentInt, sessionTTLMs,
+	); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -58,7 +114,9 @@ func (s *Store) Issue() (*IssuedToken, error) {
 	}
 	return &IssuedToken{
 		Token:     token,
-		ExpiresAt: time.UnixMilli(expiresMs).UTC().Format("2006-01-02T15:04:05.000Z"),
+		ExpiresAt: expiresAt,
+		Permanent: permanentInt != 0,
+		Reusable:  reusableInt != 0,
 	}, nil
 }
 
@@ -117,9 +175,14 @@ func (s *Store) CheckAndRecordExchangeAttempt() (bool, error) {
 	return true, nil
 }
 
-// Exchange atomically consumes a one-time access token and creates a bound session + CSRF token.
+// Exchange consumes a one-time token (or validates a reusable token) and creates a bound session + CSRF token.
 // Returns (nil, nil) if the token is invalid, expired, or already used.
 func (s *Store) Exchange(token string) (*SessionInfo, error) {
+	return s.ExchangeWithDefaultTTL(token, 0)
+}
+
+// ExchangeWithDefaultTTL exchanges an access token using session_ttl_ms if set, otherwise defaultTTL (or SessionTTL).
+func (s *Store) ExchangeWithDefaultTTL(token string, defaultTTL time.Duration) (*SessionInfo, error) {
 	if !security.SecretRegexp.MatchString(token) {
 		return nil, nil
 	}
@@ -133,17 +196,39 @@ func (s *Store) Exchange(token string) (*SessionInfo, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var expiresMs int64
+	var (
+		permanentInt int
+		sessionTTLMs int64
+	)
+
+	// Single-use tokens must be consumed atomically.
 	err = tx.QueryRow(
-		`UPDATE accesses SET used=1 WHERE hash=? AND used=0 AND expires>? RETURNING expires`,
+		`UPDATE accesses SET used=1 WHERE hash=? AND reusable=0 AND used=0 AND (expires=0 OR expires>?)
+		 RETURNING permanent, session_ttl_ms`,
 		sealedToken, nowMs,
-	).Scan(&expiresMs)
+	).Scan(&permanentInt, &sessionTTLMs)
 	if errors.Is(err, sql.ErrNoRows) {
-		// Migrate legacy plain-SHA256 access row once if present.
+		// Migrate legacy plain-SHA256 single-use access row once if present.
 		err = tx.QueryRow(
-			`UPDATE accesses SET used=1, hash=? WHERE hash=? AND used=0 AND expires>? RETURNING expires`,
+			`UPDATE accesses SET used=1, hash=? WHERE hash=? AND reusable=0 AND used=0 AND (expires=0 OR expires>?)
+			 RETURNING permanent, session_ttl_ms`,
 			sealedToken, legacyToken, nowMs,
-		).Scan(&expiresMs)
+		).Scan(&permanentInt, &sessionTTLMs)
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		// Reusable/permanent tokens are validated without setting used=1.
+		err = tx.QueryRow(
+			`SELECT permanent, session_ttl_ms FROM accesses
+			 WHERE hash=? AND reusable=1 AND used=0 AND (expires=0 OR expires>?)`,
+			sealedToken, nowMs,
+		).Scan(&permanentInt, &sessionTTLMs)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = tx.QueryRow(
+				`UPDATE accesses SET hash=? WHERE hash=? AND reusable=1 AND used=0 AND (expires=0 OR expires>?)
+				 RETURNING permanent, session_ttl_ms`,
+				sealedToken, legacyToken, nowMs,
+			).Scan(&permanentInt, &sessionTTLMs)
+		}
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -152,6 +237,51 @@ func (s *Store) Exchange(token string) (*SessionInfo, error) {
 		return nil, err
 	}
 
+	var effectiveTTLMs int64
+	switch {
+	case sessionTTLMs > 0:
+		effectiveTTLMs = sessionTTLMs
+	case defaultTTL > 0:
+		effectiveTTLMs = defaultTTL.Milliseconds()
+	case permanentInt != 0:
+		effectiveTTLMs = PermanentSessionTTL.Milliseconds()
+	default:
+		effectiveTTLMs = SessionTTL.Milliseconds()
+	}
+
+	sess, err := s.insertSessionTx(tx, nowMs+effectiveTTLMs, permanentInt != 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+// CreateSession creates a new authenticated session with the given TTL (defaulting to SessionTTL if <= 0).
+func (s *Store) CreateSession(ttl time.Duration) (*SessionInfo, error) {
+	if ttl <= 0 {
+		ttl = SessionTTL
+	}
+	nowMs := s.NowFn().UnixMilli()
+	tx, err := s.SQL.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	sess, err := s.insertSessionTx(tx, nowMs+ttl.Milliseconds(), false)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+func (s *Store) insertSessionTx(tx *sql.Tx, expiresMs int64, permanent bool) (*SessionInfo, error) {
 	rawSession, err := security.GenerateSecret()
 	if err != nil {
 		return nil, err
@@ -164,15 +294,13 @@ func (s *Store) Exchange(token string) (*SessionInfo, error) {
 	); err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	return &SessionInfo{
 		SessionHash: sessionHash,
 		RawSession:  rawSession,
 		CSRF:        csrf,
 		ExpiresMs:   expiresMs,
 		ExpiresAt:   time.UnixMilli(expiresMs).UTC().Format("2006-01-02T15:04:05.000Z"),
+		Permanent:   permanent,
 	}, nil
 }
 

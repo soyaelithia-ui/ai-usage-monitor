@@ -2,6 +2,15 @@ export type WindowOption = '15m' | '1h' | '24h' | '7d';
 export type ViewTab = 'overview' | 'history' | 'sources';
 export type ThemeId = 'bioluminescent' | 'cute-pastel-blue' | 'burned-paper' | 'vivid-yellow-green';
 export type ThemeMode = 'dark' | 'light';
+export type AuthMode = 'token' | 'local';
+
+export interface SessionStatus {
+  authMode?: AuthMode;
+  tokenRequired?: boolean;
+  permanent?: boolean;
+  csrf: string;
+  expiresAt: string;
+}
 
 export interface SummaryMetrics {
   id?: string;

@@ -34,12 +34,12 @@ All incoming request URIs must pass perimeter filtering before routing or filesy
 4. **URL Length & Character Bounds**:
    - Any raw URI exceeding 2048 characters or containing unescaped control characters (`[\x00-\x1f]`) must be rejected with **HTTP 400 Bad Request**.
 
-### 1.2 Reverse Proxy Spoofing & Header Smuggling Denial
+### 1.2 Reverse Proxy Spoofing, Header Smuggling & Network Perimeter Isolation
 
-The backend listens exclusively on loopback (`127.0.0.1` / `::1`) and enforces a zero-trust policy against client-forged proxy headers:
+The backend listens on loopback (`127.0.0.1` / `::1`) by default—or on an explicitly configured `bindAddr` (`BIND_ADDR` / `--bind` / `--lan`) when local-network access is enabled—and enforces a zero-trust policy against client-forged proxy headers and non-local access in `local` mode:
 
-1. **Backend Isolation (Direct Loopback)**:
-   - When running as the backend, any request bearing forwarding headers must be immediately rejected with **HTTP 403 Forbidden**:
+1. **Backend Isolation (Proxy Header Denial)**:
+   - Any request bearing forwarding headers must be immediately rejected with **HTTP 403 Forbidden** (including in LAN and `authMode: "local"` modes):
      - `X-Forwarded-For`
      - `X-Forwarded-Host`
      - `X-Forwarded-Proto`
@@ -49,34 +49,44 @@ The backend listens exclusively on loopback (`127.0.0.1` / `::1`) and enforces a
      - `Forwarded-*`
      - `Via`
 2. **Gateway / Edge Proxy Validation**:
-   - At the edge, only the single trusted reverse proxy may assert forwarding parameters.
+   - At the edge, only the single trusted reverse proxy may assert forwarding parameters, and it must strip all forwarding headers above before forwarding to the backend (optionally authenticating via `X-Usage-Monitor-Gateway: <GATEWAY_KEY>`).
    - Evidence of proxy chaining (multiple hops in `X-Forwarded-For`, presence of `Via` or `Forwarded`) must result in **HTTP 403 Forbidden**.
    - Host and protocol assertions (`X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-Port`) must match configured expectations. If an explicit non-standard port is configured (e.g. `8443`), requests presenting mismatched ports (e.g. `443`) must be rejected (HTTP 421 or 403).
 3. **Duplicate Header Smuggling Prevention**:
-   - The server must inspect all header occurrences (including multi-value headers or raw headers). If duplicate headers contain conflicting or blacklisted values (such as automated bot user agents or multi-hop forwarding IPs), the request must be rejected.
+   - The server must inspect all header occurrences (including multi-value headers or raw headers). If duplicate single-value security headers (`Host`, `Origin`, `Content-Type`) are present, the request must be rejected with **HTTP 403 Forbidden**.
 4. **Rate Limiting**:
    - Global rate limiter (default: 600 requests per minute) blunts automated volumetric scraping regardless of claimed source IP.
+5. **Local-Network Tokenless Mode (`authMode: "local"`) Fail-Closed IP Enforcement**:
+   - When `authMode` is `"local"` (normalized from `local`, `lan`, `no-token`, `local-no-token`), `security.IsLocalNetworkAddr(r.RemoteAddr)` must be enforced fail-closed across the HTTP perimeter middleware, `/auth/session`, `/auth/logout`, protected routes, `/api/stream`, and the `NotFound` fallback.
+   - Permitted client addresses are strictly limited to unmapped loopback (`127.0.0.0/8`, `::1`), RFC1918 private (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), IPv4/IPv6 link-local unicast (`169.254.0.0/16`, `fe80::/10`), and IPv6 ULA (`fc00::/7`).
+   - Any non-local/public IP (e.g., `203.0.113.10`) or unparseable remote address must be rejected with **HTTP 403 Forbidden**.
+   - Because forwarding headers remain strictly banned (`403`), external proxies cannot spoof `RemoteAddr` via HTTP headers; operators must never place an internet-facing reverse proxy or tunnel in front of an instance running with `authMode: "local"`.
 
-### 1.3 Strict Origin & CSRF Policy
+### 1.3 Strict Origin, CSRF & Session Cookie Policy
 
-Cross-Site Request Forgery and unauthorized cross-origin data extraction are prevented through deterministic origin verification:
+Cross-Site Request Forgery and unauthorized cross-origin data extraction are prevented through deterministic origin verification and machine-sealed session binding:
 
 1. **Origin Verification Matrix**:
-   - **Origin Header Present**: Any request bearing an `Origin` header (including `GET` and `HEAD` requests) **must** validate against the allowed origins list. Unrecognized origins receive **HTTP 403 Forbidden**.
-   - **Mutating Requests**: All state-changing verbs (`POST`, `PUT`, `DELETE`, `PATCH`) **require** a valid `Origin` header matching the allowlist AND `Content-Type: application/json`.
+   - **Origin Header Present**: Any request bearing an `Origin` header (including `GET` and `HEAD` requests) **must** validate against the allowed origins policy. Unrecognized or external origins receive **HTTP 403 Forbidden**.
+   - **Mutating Requests**: All state-changing verbs (`POST`, `PUT`, `DELETE`, `PATCH`) **require** a valid `Origin` header matching the policy AND `Content-Type: application/json` (except `POST /api/ingest`, `POST /api/agents/register`, and `POST /api/hooks/{agent}`, which authenticate via `Authorization: Bearer <INGEST_KEY>`).
 2. **Allowed Origins Construction**:
-   - Primary configured origin (e.g., `https://usage.example.com`).
-   - Loopback aliases: When configured with loopback HTTP (`http://localhost:PORT`), the server must automatically allow `http://127.0.0.1:PORT` and `http://[::1]:PORT`.
+   - Primary configured origin (e.g., `https://usage.example.com`, or loopback HTTP `http://127.0.0.1:PORT`).
+   - Loopback aliases: When configured with loopback HTTP (`http://localhost:PORT`), the server automatically allows `http://127.0.0.1:PORT` and `http://[::1]:PORT`.
    - Wildcard matching: Explicit `allowedOrigins` entries supporting single-label wildcards (e.g., `https://*.example.dev` matches `https://sub.example.dev`, but not `https://a.b.example.dev` or `https://example.dev`).
+   - **LAN Origin Mode (`allowLan: true`)**: Automatically enabled when `authMode == "local"` or `bindAddr` is non-loopback (or explicitly via `ALLOW_LAN=true` / `allowLan: true` / `--lan`). Permits clean `http://` and `https://` origins on local-network hosts (`security.IsLocalNetworkHost`: loopback/`localhost`, RFC1918 private, link-local unicast, IPv6 ULA, and valid `*.local` mDNS hostnames). When `allowLan` is false, non-loopback `http://` origins remain rejected at startup. Even when `allowLan` is true, unknown external origins (e.g., `https://evil.com`) and public IP origins must be rejected with **HTTP 403 Forbidden**.
 3. **External Document Navigation Exception**:
-   - Cross-site requests (`sec-fetch-site: cross-site`) are blocked with **HTTP 403**, with exactly one exception: `GET` requests to entry paths (`/` or `/access`) with `sec-fetch-mode: navigate` and `sec-fetch-dest: document`.
+   - Cross-site requests (`sec-fetch-site: cross-site`) remain blocked with **HTTP 403 Forbidden** in all modes (including LAN and `local`), with exactly one exception: `GET` requests to entry paths (`/` or `/access`) with `sec-fetch-mode: navigate` and `sec-fetch-dest: document`.
+4. **Tokens, Sessions & Cookie Transport Policy**:
+   - Default `Store.Issue()` preserves the invariant of a single-use, 8-hour (`SessionTTL`) token revoking previous accesses and sessions. Optional issuance flags (`--permanent`, `--reusable`, `--ttl`, `--keep`) and static `accessToken` (`ACCESS_TOKEN`, 43-char base64url, distinct from `gatewayKey` and `ingestKey`) preserve `machine.key` HMAC-SHA256 sealing, constant-time validation, and `20/min` `/auth/exchange` rate limiting.
+   - **Cookie Security & LAN HTTP Fallback**: For HTTPS requests (including TLS-terminated requests matching an `https://` configured origin) and loopback HTTP (`localhost`, `127.0.0.1`, `::1`), session cookies **must** use `__Host-usage-monitor` with `Secure: true`, `HttpOnly: true`, `Path: "/"`, and `SameSite: Strict`. Plain-HTTP fallback to `usage-monitor` with `Secure: false` (retaining `HttpOnly: true`, `Path: "/"`, `SameSite: Strict`) is permitted **only** when LAN mode is active (`allowLan`, `authMode == "local"`, or non-loopback `bindAddr`) AND the request is neither HTTPS nor targeting a loopback host (because browsers reject `__Host-` and `Secure` cookies over non-loopback plain HTTP).
+   - In `authMode: "local"`, authenticated local-network clients share the sentinel non-persistent SSE session (`__local_lan_session__`) skipped by `runSessionSweep`; `GET /auth/session` returns `{authMode: "local", tokenRequired: false, csrf: "", expiresAt: ""}` and `POST /auth/logout` returns `200 {"ok": true}` for local-network IPs without CSRF failure.
 
 ### 1.4 Framing Prevention & Security Headers
 
 1. **Framing Rejection**:
-   - Any request with `sec-fetch-dest` set to `iframe`, `frame`, `embed`, or `object` must immediately fail closed with **HTTP 403 Forbidden**.
+   - Any request with `sec-fetch-dest` set to `iframe`, `frame`, `embed`, or `object` must immediately fail closed with **HTTP 403 Forbidden** across all modes (`token`, LAN, and `local`).
 2. **Mandatory HTTP Response Headers**:
-   All HTTP responses must enforce the following baseline security headers:
+   All HTTP responses (including public static routes `/health`, `/access`, `/favicon.svg`, and LAN/local mode responses) must enforce the baseline security headers from `HeadersMiddleware`, preserving strict CSP with zero inline styles:
    ```http
    X-Frame-Options: DENY
    Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; manifest-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'
@@ -84,6 +94,12 @@ Cross-Site Request Forgery and unauthorized cross-origin data extraction are pre
    Referrer-Policy: no-referrer
    Cache-Control: no-store
    Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), payment=(), interest-cohort=()
+   Strict-Transport-Security: max-age=31536000; includeSubDomains
+   Cross-Origin-Opener-Policy: same-origin
+   Cross-Origin-Resource-Policy: same-origin
+   X-Permitted-Cross-Domain-Policies: none
+   X-DNS-Prefetch-Control: off
+   X-Robots-Tag: noindex, nofollow, noarchive
    ```
 
 ### 1.5 Safe Filesystem & Asset Confinement

@@ -135,8 +135,18 @@ async function main() {
   });
 
   let browser;
+  let localProc;
+  let localTmpDir;
+  let localStderr = '';
   try {
     await waitForHealth(`${origin}/health`);
+
+    // Verify /favicon.svg returns 200 even before authentication
+    const favRes = await fetch(`${origin}/favicon.svg`, { headers: { 'User-Agent': CHROME_UA } });
+    assert.equal(favRes.status, 200, `Expected GET /favicon.svg to return 200 before login, got ${favRes.status}`);
+    const favSvg = await favRes.text();
+    assert.ok(favSvg.includes('<svg') && favSvg.includes('#10b981'), 'favicon.svg must be valid emerald SVG');
+
     const execPath = findChromium();
     browser = await chromium.launch({
       executablePath: execPath,
@@ -177,6 +187,11 @@ async function main() {
       await page.waitForSelector('#access-form', { timeout: 15_000 });
       assert.ok(page.url().endsWith('/access'), `Expected redirect to /access, got ${page.url()}`);
 
+      // Verify favicon link tag points to /favicon.svg (not codex.svg or openai.svg) before login
+      const accessIconHref = await page.locator('link[rel="icon"]').getAttribute('href');
+      assert.equal(accessIconHref, '/favicon.svg', `Expected link[rel="icon"] to be /favicon.svg, got ${accessIconHref}`);
+      assert.ok(!accessIconHref?.includes('codex.svg') && !accessIconHref?.includes('openai.svg'));
+
       // Invalid token validation
       await page.getByLabel('Token de acceso').fill('invalid-short-token');
       await page.getByRole('button', { name: 'Abrir mi panel' }).click();
@@ -188,6 +203,8 @@ async function main() {
       await page.getByRole('button', { name: 'Abrir mi panel' }).click();
       await page.waitForSelector('.live-dot-inline.on', { timeout: 10_000 });
       assert.equal(new URL(page.url()).pathname, '/');
+      const appIconHref = await page.locator('link[rel="icon"]').getAttribute('href');
+      assert.equal(appIconHref, '/favicon.svg');
 
       return { ctx, page, pageErrors, consoleErrors, cspViolations, apiRequests };
     };
@@ -262,6 +279,19 @@ async function main() {
         return txt.includes('2 eventos') && txt.includes('Antigravity') && txt.includes('Codex');
       },
       { timeout: 10_000 },
+    );
+
+    // Verify separate pricing note paragraph is NOT rendered in Overview DOM
+    const overviewBodyText = await page.locator('main.workspace').innerText();
+    assert.equal(
+      overviewBodyText.includes('Equivalente API Standard, USD; nivel supuesto'),
+      false,
+      'Overview DOM must NOT render separate pricing note paragraph',
+    );
+    assert.equal(
+      await page.locator('main.workspace p.notice').count(),
+      0,
+      'Overview DOM must NOT render separate <p class="notice"> pricing paragraph',
     );
 
     // Active-view-only check on Overview SSE updates: ONLY /api/analytics should have been called
@@ -498,17 +528,166 @@ async function main() {
     assert.deepEqual(mCE, [], `Mobile consoleErrors: ${mCE.join('; ')}`);
     await mCtx.close();
 
+    // ------------------------------------------------------------------
+    // 3. Phase 2a: Permanent/reusable token works across two separate browser contexts
+    // ------------------------------------------------------------------
+    const permOut = execFileSync(BINARY_PATH, ['issue', '--permanent'], { env, encoding: 'utf8' });
+    const permPayload = JSON.parse(permOut);
+    const permToken = permPayload.token;
+    assert.ok(permToken && permToken.length === 43, 'issue --permanent must emit a 43-char token');
+    assert.equal(permPayload.permanent, true, 'issue --permanent must report permanent: true');
+
+    const permCtx1 = await browser.newContext({ viewport: { width: 1440, height: 900 }, userAgent: CHROME_UA });
+    const permPage1 = await permCtx1.newPage();
+    await permPage1.goto(origin + '/', { waitUntil: 'domcontentloaded' });
+    await permPage1.waitForSelector('#access-form', { timeout: 10_000 });
+    await permPage1.getByLabel('Token de acceso').fill(permToken);
+    await permPage1.getByRole('button', { name: 'Abrir mi panel' }).click();
+    await permPage1.waitForSelector('.live-dot-inline.on', { timeout: 10_000 });
+    assert.equal(new URL(permPage1.url()).pathname, '/');
+    assert.equal(await permPage1.locator('button[aria-label="Cerrar sesión"]').count(), 1);
+
+    const permCtx2 = await browser.newContext({ viewport: { width: 1440, height: 900 }, userAgent: CHROME_UA });
+    const permPage2 = await permCtx2.newPage();
+    await permPage2.goto(origin + '/', { waitUntil: 'domcontentloaded' });
+    await permPage2.waitForSelector('#access-form', { timeout: 10_000 });
+    await permPage2.getByLabel('Token de acceso').fill(permToken);
+    await permPage2.getByRole('button', { name: 'Abrir mi panel' }).click();
+    await permPage2.waitForSelector('.live-dot-inline.on', { timeout: 10_000 });
+    assert.equal(new URL(permPage2.url()).pathname, '/');
+    await permPage2.waitForFunction(() => document.body.innerText.includes('2 eventos'), { timeout: 10_000 });
+
+    await permPage1.reload({ waitUntil: 'domcontentloaded' });
+    await permPage1.waitForSelector('.live-dot-inline.on', { timeout: 10_000 });
+    await permCtx1.close();
+    await permCtx2.close();
+
+    // ------------------------------------------------------------------
+    // 4. Phase 2b: Local tokenless mode (AUTH_MODE=local)
+    // ------------------------------------------------------------------
+    localTmpDir = mkdtempSync(join(tmpdir(), 'aum-local-e2e-'));
+    const localCodexRoot = join(localTmpDir, 'codex');
+    mkdirSync(localCodexRoot, { recursive: true });
+    const localPort = await getFreePort();
+    const localOrigin = `http://127.0.0.1:${localPort}`;
+    const localEnv = {
+      ...process.env,
+      PORT: String(localPort),
+      BIND_ADDR: '127.0.0.1',
+      AUTH_MODE: 'local',
+      DB_PATH: join(localTmpDir, 'usage.db'),
+      ORIGIN: localOrigin,
+      INGEST_KEY: ingestKey,
+      CODEX_ROOT: localCodexRoot,
+    };
+
+    localProc = spawn(BINARY_PATH, [], { env: localEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+    localProc.stderr.on('data', (d) => {
+      localStderr += d.toString();
+    });
+    await waitForHealth(`${localOrigin}/health`);
+
+    const localCtx = await browser.newContext({ viewport: { width: 1440, height: 900 }, userAgent: CHROME_UA });
+    const localPage = await localCtx.newPage();
+    const localPageErrors = [];
+    const localConsoleErrors = [];
+
+    await localPage.addInitScript(() => {
+      window.__cspViolations = [];
+      document.addEventListener('securitypolicyviolation', (e) => {
+        window.__cspViolations.push(`${e.violatedDirective}:${e.blockedURI}`);
+      });
+    });
+    localPage.on('pageerror', (e) => localPageErrors.push(e.message));
+    localPage.on('console', (m) => {
+      if (m.type() === 'error') {
+        localConsoleErrors.push(m.text());
+      }
+    });
+
+    // Loads / directly without redirecting to /access and hides logout button
+    await localPage.goto(localOrigin + '/', { waitUntil: 'domcontentloaded' });
+    await localPage.waitForSelector('.live-dot-inline.on', { timeout: 15_000 });
+    assert.equal(new URL(localPage.url()).pathname, '/');
+    assert.equal(await localPage.locator('#access-form').count(), 0, 'Local mode must not show #access-form');
+    assert.equal(
+      await localPage.locator('button[aria-label="Cerrar sesión"]').count(),
+      0,
+      'Local mode must hide logout button',
+    );
+    assert.equal(await localPage.locator('link[rel="icon"]').getAttribute('href'), '/favicon.svg');
+
+    // Streams SSE and renders telemetry cleanly
+    const localIngRes = await fetch(`${localOrigin}/api/ingest`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${ingestKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        schema: 'usage-monitor.usage.v1',
+        semantics: 'input_includes_cache;output_includes_reasoning',
+        source: 'antigravity',
+        provider: 'openai',
+        model: 'gpt-6-astra',
+        responseId: 'local-e2e-1',
+        sessionId: 'local-sess-1',
+        occurredAt: new Date().toISOString(),
+        inputTokens: '400',
+        outputTokens: '120',
+        cachedInputTokens: '50',
+        cacheWriteInputTokens: '0',
+        reasoningOutputTokens: '10',
+      }),
+    });
+    assert.equal(localIngRes.status, 200);
+
+    await localPage.waitForFunction(
+      () => {
+        const txt = document.body.innerText;
+        return txt.includes('1 evento') && txt.includes('Antigravity');
+      },
+      { timeout: 10_000 },
+    );
+
+    const localOverviewText = await localPage.locator('main.workspace').innerText();
+    assert.equal(
+      localOverviewText.includes('Equivalente API Standard, USD; nivel supuesto'),
+      false,
+      'Local mode Overview must NOT render separate pricing note paragraph',
+    );
+    assert.equal(await localPage.locator('main.workspace p.notice').count(), 0);
+    assert.equal(await localPage.evaluate(() => document.querySelectorAll('[style]').length), 0);
+    assert.deepEqual(await localPage.evaluate(() => window.__cspViolations || []), []);
+
+    // Navigating to /access in local mode also resolves directly to /
+    await localPage.goto(localOrigin + '/access', { waitUntil: 'domcontentloaded' });
+    await localPage.waitForSelector('.live-dot-inline.on', { timeout: 10_000 });
+    assert.equal(new URL(localPage.url()).pathname, '/');
+    assert.equal(await localPage.locator('#access-form').count(), 0);
+
+    assert.deepEqual(localPageErrors, [], `Local mode pageErrors: ${localPageErrors.join('; ')}`);
+    assert.deepEqual(localConsoleErrors, [], `Local mode consoleErrors: ${localConsoleErrors.join('; ')}`);
+    await localCtx.close();
+
     console.log(
-      'BROWSER E2E AUDIT PASSED: Desktop (1440x900), Mobile (390x844), active-view-only fetches, unified agent ID, semantic History ARIA, zero inline styles/CSP violations, zero tokenizer UI, 8 theme/mode WCAG AA combos, anti-FOUC, SSE live update, <details>, tabular-nums, keyboard focus, reduced-motion, and logout/revocation.',
+      'BROWSER E2E AUDIT PASSED: Desktop (1440x900), Mobile (390x844), /favicon.svg, no separate pricing note paragraph, permanent token reuse, local tokenless mode, active-view-only fetches, unified agent ID, semantic History ARIA, zero inline styles/CSP violations, zero tokenizer UI, 8 theme/mode WCAG AA combos, anti-FOUC, SSE live update, <details>, tabular-nums, keyboard focus, reduced-motion, and logout/revocation.',
     );
   } catch (err) {
     console.error('Server stderr:\n' + stderr);
+    if (localStderr) console.error('Local server stderr:\n' + localStderr);
     throw err;
   } finally {
+    const stopChild = async (child) => {
+      if (!child || child.exitCode !== null || child.signalCode !== null) return;
+      child.kill('SIGTERM');
+      await new Promise((r) => (child.exitCode !== null || child.signalCode !== null ? r() : child.once('exit', r)));
+    };
     if (browser) await browser.close().catch(() => {});
-    proc.kill('SIGTERM');
-    await new Promise((r) => proc.on('exit', r));
+    await stopChild(localProc);
+    await stopChild(proc);
     rmSync(tmpDir, { recursive: true, force: true });
+    if (localTmpDir) rmSync(localTmpDir, { recursive: true, force: true });
   }
 }
 

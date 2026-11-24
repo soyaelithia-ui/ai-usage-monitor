@@ -8,7 +8,7 @@ import (
 
 func TestEmbeddedDistFS(t *testing.T) {
 	fsys := DistFS()
-	for _, required := range []string{"index.html", "theme-init.js", "fonts/inter-latin.woff2", "icons/codex.svg"} {
+	for _, required := range []string{"index.html", "favicon.svg", "theme-init.js", "fonts/inter-latin.woff2", "icons/codex.svg"} {
 		if _, err := fs.Stat(fsys, required); err != nil {
 			t.Fatalf("missing embedded static asset %s: %v", required, err)
 		}

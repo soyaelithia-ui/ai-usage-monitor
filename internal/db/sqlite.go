@@ -73,8 +73,21 @@ func Open(path, machineKeyOverride string, nowFn func() time.Time) (*Store, erro
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
-	// Idempotent migration for pre-existing databases lacking dynamic_pricing.source.
-	_, _ = sqlDB.Exec(`ALTER TABLE dynamic_pricing ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'`)
+	// Idempotent migrations for pre-existing databases.
+	if err := ensureTableColumns(sqlDB, "dynamic_pricing", []columnMigration{
+		{name: "source", ddl: "TEXT NOT NULL DEFAULT 'agent'"},
+	}); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
+	if err := ensureTableColumns(sqlDB, "accesses", []columnMigration{
+		{name: "reusable", ddl: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "permanent", ddl: "INTEGER NOT NULL DEFAULT 0"},
+		{name: "session_ttl_ms", ddl: "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
+	}
 
 	nowMs := strconv.FormatInt(nowFn().UnixMilli(), 10)
 	if _, err := sqlDB.Exec(`INSERT OR IGNORE INTO meta(key, value) VALUES ('activation', ?)`, nowMs); err != nil {
@@ -157,4 +170,47 @@ func (s *Store) RecordError(kind, identity string) {
 	id := security.LegacyHash(kind + identity)
 	at := s.NowFn().UTC().Format("2006-01-02T15:04:05.000Z")
 	_, _ = s.SQL.Exec(`INSERT OR IGNORE INTO errors(id, kind, at) VALUES (?, ?, ?)`, id, kind, at)
+}
+
+type columnMigration struct {
+	name string
+	ddl  string
+}
+
+func ensureTableColumns(sqlDB *sql.DB, table string, cols []columnMigration) error {
+	rows, err := sqlDB.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	existing := make(map[string]bool)
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			colType   string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan %s column: %w", table, err)
+		}
+		existing[strings.ToLower(name)] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate %s columns: %w", table, err)
+	}
+	_ = rows.Close()
+
+	for _, col := range cols {
+		if existing[strings.ToLower(col.name)] {
+			continue
+		}
+		if _, err := sqlDB.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, col.name, col.ddl)); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", table, col.name, err)
+		}
+	}
+	return nil
 }
