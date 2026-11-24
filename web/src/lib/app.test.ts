@@ -1,7 +1,8 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { formatCompact, formatExact, formatMoney, pctRatio } from './format';
 import { THEMES, themeStore } from './theme.svelte';
-import { buildFilterQuery } from './api';
+import { buildFilterQuery, checkSession, exchangeToken } from './api';
+import { connectTelemetryStream } from './sse';
 import { buildAgentOptions, normalizeAgentId, resolveAgentMeta } from './agents';
 import { requiredEndpointsForTab } from './viewLoader';
 
@@ -146,5 +147,125 @@ describe('unified agent normalization & options', () => {
     expect(options.map((o) => o.id)).toEqual(['codex', 'antigravity', 'hermes']);
     expect(options.find((o) => o.id === 'codex')?.name).toBe('Codex');
     expect(options.find((o) => o.id === 'antigravity')?.name).toBe('Antigravity');
+  });
+});
+
+describe('session status and tokenless SSE behavior', () => {
+  const originalFetch = globalThis.fetch;
+  const originalEventSource = globalThis.EventSource;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    globalThis.EventSource = originalEventSource;
+    vi.restoreAllMocks();
+  });
+
+  it('defaults tokenRequired to true when omitted and detects local tokenless mode', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ csrf: 'c1', expiresAt: '2026-12-01T00:00:00Z' }), { status: 200 }),
+    );
+    const tokenSess = await checkSession();
+    expect(tokenSess).toEqual({
+      authMode: 'token',
+      tokenRequired: true,
+      permanent: undefined,
+      csrf: 'c1',
+      expiresAt: '2026-12-01T00:00:00Z',
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ authMode: 'local', tokenRequired: false, csrf: '', expiresAt: '' }),
+        { status: 200 },
+      ),
+    );
+    const localSess = await checkSession();
+    expect(localSess).toEqual({
+      authMode: 'local',
+      tokenRequired: false,
+      permanent: undefined,
+      csrf: '',
+      expiresAt: '',
+    });
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(new Response('unauthorized', { status: 401 }));
+    expect(await checkSession()).toBeNull();
+  });
+
+  it('exposes authMode, tokenRequired, and permanent flags from exchangeToken', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          authMode: 'token',
+          tokenRequired: true,
+          permanent: true,
+          csrf: 'c2',
+          expiresAt: '2027-11-24T00:00:00Z',
+        }),
+        { status: 200 },
+      ),
+    );
+    const res = await exchangeToken('A'.repeat(43));
+    expect(res).toEqual({
+      authMode: 'token',
+      tokenRequired: true,
+      permanent: true,
+      csrf: 'c2',
+      expiresAt: '2027-11-24T00:00:00Z',
+    });
+  });
+
+  it('does not expire local tokenless SSE on disconnect unless /auth/session returns 401 or 403', async () => {
+    class MockEventSource {
+      static latest: MockEventSource | null = null;
+      listeners = new Map<string, Array<() => void>>();
+      onerror: (() => void) | null = null;
+      closed = false;
+
+      constructor(_url: string, _init?: EventSourceInit) {
+        MockEventSource.latest = this;
+      }
+      addEventListener(type: string, cb: () => void) {
+        const list = this.listeners.get(type) ?? [];
+        list.push(cb);
+        this.listeners.set(type, list);
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+
+    globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
+
+    const statuses: boolean[] = [];
+    let expiredCount = 0;
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ authMode: 'local', tokenRequired: false, csrf: '', expiresAt: '' }), {
+        status: 200,
+      }),
+    );
+
+    const stop = connectTelemetryStream({
+      tokenRequired: false,
+      onStatus: (live) => statuses.push(live),
+      onChange: () => {},
+      onExpired: () => {
+        expiredCount++;
+      },
+    });
+
+    MockEventSource.latest?.onerror?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(statuses).toContain(false);
+    expect(expiredCount).toBe(0);
+    expect(MockEventSource.latest?.closed).toBe(false);
+
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(new Response('forbidden', { status: 403 }));
+    MockEventSource.latest?.onerror?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(expiredCount).toBe(1);
+    expect(MockEventSource.latest?.closed).toBe(true);
+    stop();
   });
 });

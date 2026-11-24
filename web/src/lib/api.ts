@@ -3,9 +3,12 @@ import type {
   DiscoveryResponse,
   EventsResponse,
   ReconciliationResponse,
+  SessionStatus,
   SharedFilters,
   SourcesResponse,
 } from './types';
+
+export type { SessionStatus } from './types';
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -45,16 +48,28 @@ export function buildFilterQuery(filters: SharedFilters, extra: Record<string, s
   return params.toString();
 }
 
-export async function checkSession(): Promise<{ csrf: string; expiresAt: string } | null> {
+function normalizeSessionStatus(raw: Partial<SessionStatus>): SessionStatus {
+  const tokenRequired = raw.tokenRequired ?? raw.authMode !== 'local';
+  const authMode = raw.authMode ?? (tokenRequired ? 'token' : 'local');
+  return {
+    authMode,
+    tokenRequired,
+    permanent: raw.permanent,
+    csrf: raw.csrf ?? '',
+    expiresAt: raw.expiresAt ?? '',
+  };
+}
+
+export async function checkSession(): Promise<SessionStatus | null> {
   const res = await fetch('/auth/session', {
     credentials: 'same-origin',
     cache: 'no-store',
   });
   if (!res.ok) return null;
-  return (await res.json()) as { csrf: string; expiresAt: string };
+  return normalizeSessionStatus((await res.json()) as Partial<SessionStatus>);
 }
 
-export async function exchangeToken(token: string): Promise<{ csrf: string; expiresAt: string }> {
+export async function exchangeToken(token: string): Promise<SessionStatus> {
   const res = await fetch('/auth/exchange', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -70,7 +85,7 @@ export async function exchangeToken(token: string): Promise<{ csrf: string; expi
     } catch {}
     throw new Error(msg);
   }
-  return (await res.json()) as { csrf: string; expiresAt: string };
+  return normalizeSessionStatus((await res.json()) as Partial<SessionStatus>);
 }
 
 export async function logoutSession(csrf: string): Promise<void> {

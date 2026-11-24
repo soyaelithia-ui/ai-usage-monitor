@@ -6,12 +6,21 @@
     activeTab: ViewTab;
     windowValue: WindowOption;
     live: boolean;
+    showLogout?: boolean;
     onToggleSidebar: () => void;
     onWindowChange: (w: WindowOption) => void;
     onLogout: () => void;
   }
 
-  let { activeTab, windowValue, live, onToggleSidebar, onWindowChange, onLogout }: Props = $props();
+  let {
+    activeTab,
+    windowValue,
+    live,
+    showLogout = true,
+    onToggleSidebar,
+    onWindowChange,
+    onLogout,
+  }: Props = $props();
 
   let themeMenuOpen = $state(false);
   let switcherEl: HTMLDivElement | undefined = $state();
@@ -142,18 +151,20 @@
       {/if}
     </button>
 
-    <button
-      type="button"
-      class="icon-button"
-      aria-label="Cerrar sesión"
-      title="Cerrar sesión"
-      onclick={onLogout}
-    >
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-        <polyline points="16 17 21 12 16 7" />
-        <line x1="21" y1="12" x2="9" y2="12" />
-      </svg>
-    </button>
+    {#if showLogout}
+      <button
+        type="button"
+        class="icon-button"
+        aria-label="Cerrar sesión"
+        title="Cerrar sesión"
+        onclick={onLogout}
+      >
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <polyline points="16 17 21 12 16 7" />
+          <line x1="21" y1="12" x2="9" y2="12" />
+        </svg>
+      </button>
+    {/if}
   </div>
 </header>

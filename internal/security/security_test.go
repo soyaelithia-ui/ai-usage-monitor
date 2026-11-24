@@ -145,6 +145,195 @@ func TestOriginPolicyAndFraming(t *testing.T) {
 	}
 }
 
+func TestLocalNetworkAddrAndLANOriginPolicy(t *testing.T) {
+	localAddrs := []string{
+		"127.0.0.1:54321",
+		"[::1]:54321",
+		"::1",
+		"10.0.0.5:1234",
+		"172.16.0.1:1234",
+		"172.31.255.254:1234",
+		"192.168.1.42:8080",
+		"169.254.10.5:80",
+		"[fe80::1]:8080",
+		"[fe80::1%eth0]:8080",
+		"[fd12:3456:789a::1]:8080",
+		"[::ffff:192.168.1.42]:8080",
+	}
+	for _, addr := range localAddrs {
+		if !IsLocalNetworkAddr(addr) {
+			t.Fatalf("expected local-network addr %q to be allowed", addr)
+		}
+	}
+
+	nonLocalAddrs := []string{
+		"203.0.113.10:12345",
+		"8.8.8.8:53",
+		"172.32.0.1:8080",
+		"192.169.1.1:8080",
+		"[2001:db8::1]:8080",
+		"[::ffff:203.0.113.10]:8080",
+		"0.0.0.0:8080",
+		"",
+		"not-an-ip",
+	}
+	for _, addr := range nonLocalAddrs {
+		if IsLocalNetworkAddr(addr) {
+			t.Fatalf("expected non-local addr %q to be rejected", addr)
+		}
+	}
+
+	// Strict policy keeps LAN HTTP origins disallowed
+	strictPolicy, err := BuildOriginPolicy("http://127.0.0.1:8080", nil)
+	if err != nil {
+		t.Fatalf("BuildOriginPolicy: %v", err)
+	}
+	if strictPolicy.IsOriginAllowed("http://192.168.1.50:8080") || strictPolicy.IsOriginAllowed("http://nas.local:8080") {
+		t.Fatal("strict policy must reject non-loopback LAN HTTP origins")
+	}
+
+	// LAN policy allows RFC1918, ULA, link-local, loopback, and *.local origins
+	lanPolicy, err := BuildOriginPolicyWithOptions("http://127.0.0.1:8080", nil, true)
+	if err != nil {
+		t.Fatalf("BuildOriginPolicyWithOptions: %v", err)
+	}
+	lanAllowed := []string{
+		"http://192.168.1.50:8080",
+		"https://192.168.1.50:8443",
+		"http://10.0.0.5:8080",
+		"http://172.16.10.2:8080",
+		"http://169.254.1.5:8080",
+		"http://[fd00::1]:8080",
+		"http://macbook.local:8080",
+		"https://studio.local",
+		"http://localhost:8080",
+	}
+	for _, o := range lanAllowed {
+		if !lanPolicy.IsOriginAllowed(o) {
+			t.Fatalf("expected LAN origin %q to be allowed", o)
+		}
+	}
+	lanDenied := []string{
+		"https://evil.com",
+		"http://evil.com",
+		"http://203.0.113.10:8080",
+		"http://local.evil.com",
+		"http://.local",
+		"ftp://192.168.1.50",
+		"http://user:pass@192.168.1.50:8080",
+		"http://192.168.1.50:8080/path",
+	}
+	for _, o := range lanDenied {
+		if lanPolicy.IsOriginAllowed(o) {
+			t.Fatalf("expected external/invalid origin %q to be denied in LAN mode", o)
+		}
+	}
+
+	// LAN policy still enforces Sec-Fetch-Site: cross-site and blocks external Origin mutations
+	rLANPost := httptest.NewRequest(http.MethodPost, "http://192.168.1.50:8080/auth/exchange", nil)
+	rLANPost.Header.Set("Origin", "http://192.168.1.50:8080")
+	rLANPost.Header.Set("Content-Type", "application/json")
+	rLANPost.Header.Set("Sec-Fetch-Site", "same-origin")
+	if got := lanPolicy.CheckOriginAndFraming(rLANPost); got != 0 {
+		t.Fatalf("expected 0 for same-origin LAN POST, got %d", got)
+	}
+
+	rEvilPost := httptest.NewRequest(http.MethodPost, "http://192.168.1.50:8080/auth/exchange", nil)
+	rEvilPost.Header.Set("Origin", "https://evil.com")
+	rEvilPost.Header.Set("Content-Type", "application/json")
+	if got := lanPolicy.CheckOriginAndFraming(rEvilPost); got != http.StatusForbidden {
+		t.Fatalf("expected 403 for evil.com POST in LAN mode, got %d", got)
+	}
+
+	rCrossAPI := httptest.NewRequest(http.MethodGet, "http://192.168.1.50:8080/api/usage", nil)
+	rCrossAPI.Header.Set("Sec-Fetch-Site", "cross-site")
+	rCrossAPI.Header.Set("Sec-Fetch-Mode", "cors")
+	if got := lanPolicy.CheckOriginAndFraming(rCrossAPI); got != http.StatusForbidden {
+		t.Fatalf("expected 403 for cross-site API request in LAN mode, got %d", got)
+	}
+}
+
+func TestOriginPolicyIsHostAllowed(t *testing.T) {
+	var nilPolicy *OriginPolicy
+	if nilPolicy.IsHostAllowed("127.0.0.1:8080") {
+		t.Fatal("nil OriginPolicy must reject Host")
+	}
+
+	policy, err := BuildOriginPolicyWithOptions(
+		"https://monitor.example.com",
+		[]string{
+			"https://pinned.example.org:8443",
+			"https://*.tailnet.dev",
+			"https://*.port.dev:9443",
+		},
+		true,
+	)
+	if err != nil {
+		t.Fatalf("BuildOriginPolicyWithOptions: %v", err)
+	}
+
+	allowed := []string{
+		"127.0.0.1:8080",
+		"127.0.0.1",
+		"localhost:8080",
+		"LOCALHOST",
+		"192.168.1.71:8080",
+		"10.0.0.5:8080",
+		"172.16.0.1:8080",
+		"169.254.1.5:8080",
+		"[::1]:8080",
+		"[::1]",
+		"::1",
+		"[fd12:3456:789a::1]:8080",
+		"[fe80::1%eth0]:8080",
+		"mybox.local:8080",
+		"MyBox.LOCAL",
+		"monitor.example.com",
+		"monitor.example.com:8080",
+		"Monitor.Example.COM:8080",
+		"pinned.example.org:8443",
+		"node1.tailnet.dev",
+		"node1.tailnet.dev:8080",
+		"box.port.dev:9443",
+	}
+	for _, host := range allowed {
+		if !policy.IsHostAllowed(host) {
+			t.Fatalf("expected Host %q to be allowed", host)
+		}
+	}
+
+	denied := []string{
+		"",
+		"   ",
+		" 127.0.0.1:8080",
+		"127.0.0.1:8080 ",
+		"127.0.0.1\n:8080",
+		"127.0.0.1\x00",
+		"evil-rebind.com:8080",
+		"evil-rebind.com",
+		"203.0.113.10:8080",
+		"0.0.0.0:8080",
+		"user@127.0.0.1:8080",
+		"127.0.0.1:8080/evil",
+		"127.0.0.1:badport",
+		"127.0.0.1:",
+		"[mybox.local]:8080",
+		"foo[bar].local",
+		"localhost.evil.com:8080",
+		".local:8080",
+		"pinned.example.org",
+		"pinned.example.org:9090",
+		"a.b.tailnet.dev",
+		"box.port.dev",
+		"box.port.dev:8080",
+	}
+	for _, host := range denied {
+		if policy.IsHostAllowed(host) {
+			t.Fatalf("expected Host %q to be denied", host)
+		}
+	}
+}
+
 func TestSanitizeIconURLAndRate(t *testing.T) {
 	if u, ok := SanitizeIconURL("/icons/codex.svg"); !ok || u != "/icons/codex.svg" {
 		t.Fatalf("expected valid local icon, got %q %v", u, ok)

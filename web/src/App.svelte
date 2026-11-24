@@ -24,6 +24,7 @@
     DiscoveryResponse,
     EventsResponse,
     ReconciliationResponse,
+    SessionStatus,
     SharedFilters,
     SourcesResponse,
     ViewTab,
@@ -35,6 +36,7 @@
 
   let authChecking = $state(true);
   let authenticated = $state(false);
+  let tokenRequired = $state(true);
   let csrf = $state('');
   let sessionNotice = $state('');
 
@@ -72,6 +74,7 @@
   function expireToAccess(reason = 'Tu sesión ha caducado o fue revocada.'): void {
     requestSeq++;
     authenticated = false;
+    tokenRequired = true;
     csrf = '';
     sseLive = false;
     analytics = null;
@@ -161,7 +164,8 @@
       try {
         const sess = await checkSession();
         if (sess) {
-          csrf = sess.csrf;
+          tokenRequired = sess.tokenRequired ?? (sess.authMode !== 'local');
+          csrf = sess.csrf ?? '';
           authenticated = true;
           if (window.location.pathname === '/access') {
             window.history.replaceState(null, '', '/');
@@ -181,6 +185,7 @@
   $effect(() => {
     if (!authenticated) return;
     const stopStream = connectTelemetryStream({
+      tokenRequired,
       onStatus: (live) => {
         sseLive = live;
       },
@@ -196,7 +201,8 @@
     };
   });
 
-  function handleAuthenticated(nextCsrf: string, _expiresAt: string): void {
+  function handleAuthenticated(nextCsrf: string, _expiresAt: string, sess?: SessionStatus): void {
+    tokenRequired = sess?.tokenRequired ?? (sess ? sess.authMode !== 'local' : true);
     csrf = nextCsrf;
     sessionNotice = '';
     authenticated = true;
@@ -288,6 +294,7 @@
         {activeTab}
         windowValue={filters.window}
         live={sseLive}
+        showLogout={tokenRequired}
         onToggleSidebar={handleToggleSidebar}
         onWindowChange={handleWindowChange}
         onLogout={handleLogout}

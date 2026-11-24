@@ -4,9 +4,15 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/soyaelithia-ui/ai-usage-monitor/internal/security"
 )
 
 func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+	if s.isLocalAuthMode() && !security.IsLocalNetworkAddr(r.RemoteAddr) {
+		writeJSONError(w, http.StatusForbidden, "Acceso permitido solo desde red local")
+		return
+	}
 	sess := SessionFromContext(r.Context())
 	if sess == nil {
 		writeJSONError(w, http.StatusUnauthorized, "Acceso caducado o no iniciado")

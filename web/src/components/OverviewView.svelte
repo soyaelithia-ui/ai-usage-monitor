@@ -306,8 +306,4 @@
       {/each}
     </section>
   {/if}
-
-  {#if data.pricingNote}
-    <p class="notice">{data.pricingNote}</p>
-  {/if}
 {/if}

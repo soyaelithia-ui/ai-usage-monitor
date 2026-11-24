@@ -2,9 +2,12 @@ package security
 
 import (
 	"errors"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
+	"unicode"
 )
 
 type wildcardRule struct {
@@ -14,14 +17,94 @@ type wildcardRule struct {
 }
 
 // OriginPolicy validates Origin headers against the configured origin,
-// loopback aliases, and validated single-label wildcard rules.
+// loopback aliases, validated single-label wildcard rules, and optional LAN origins.
 type OriginPolicy struct {
 	exact     map[string]struct{}
 	wildcards []wildcardRule
+	allowLAN  bool
 }
 
-// NormalizeAllowedOrigin validates a single allowedOrigin entry.
+// IsLoopbackHost reports whether a host or host:port refers to a loopback address or localhost.
+func IsLoopbackHost(hostPort string) bool {
+	host := extractHost(hostPort)
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	return addr.Unmap().IsLoopback()
+}
+
+// IsLocalNetworkAddr reports whether remoteAddr (host:port or raw IP) is loopback,
+// RFC1918 private, IPv4/IPv6 link-local unicast, or IPv6 ULA.
+func IsLocalNetworkAddr(remoteAddr string) bool {
+	host := extractHost(remoteAddr)
+	if host == "" {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
+}
+
+// IsLocalNetworkHost reports whether a hostname or IP belongs to the local machine or LAN
+// (loopback, localhost, RFC1918 private, link-local unicast, IPv6 ULA, or *.local mDNS).
+func IsLocalNetworkHost(host string) bool {
+	h := strings.ToLower(strings.Trim(strings.TrimSpace(host), "[]"))
+	if h == "" {
+		return false
+	}
+	if h == "localhost" {
+		return true
+	}
+	if strings.HasSuffix(h, ".local") {
+		return len(h) > len(".local") && !strings.HasPrefix(h, ".") && !strings.ContainsAny(h, "* /\\@:")
+	}
+	addr, err := netip.ParseAddr(h)
+	if err != nil {
+		return false
+	}
+	addr = addr.Unmap()
+	return addr.IsLoopback() || addr.IsPrivate() || addr.IsLinkLocalUnicast()
+}
+
+// IsLocalNetworkOrigin reports whether candidate is a clean HTTP or HTTPS origin on a local-network host.
+func IsLocalNetworkOrigin(candidate string) bool {
+	u, err := url.Parse(candidate)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || u.Host == "" {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	return IsLocalNetworkHost(u.Hostname())
+}
+
+func extractHost(hostPort string) string {
+	s := strings.TrimSpace(hostPort)
+	if s == "" {
+		return ""
+	}
+	if h, _, err := net.SplitHostPort(s); err == nil {
+		s = h
+	}
+	return strings.Trim(s, "[]")
+}
+
+// NormalizeAllowedOrigin validates a single allowedOrigin entry under strict HTTPS/loopback rules.
 func NormalizeAllowedOrigin(raw string) (string, error) {
+	return normalizeAllowedOrigin(raw, false)
+}
+
+func normalizeAllowedOrigin(raw string, allowLAN bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", errors.New("empty allowed origin")
@@ -49,16 +132,23 @@ func NormalizeAllowedOrigin(raw string) (string, error) {
 	}
 	host := u.Hostname()
 	isLoopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback) {
+	isLAN := allowLAN && u.Scheme == "http" && IsLocalNetworkHost(host)
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback) && !isLAN {
 		return "", errors.New("allowed origin must be https or loopback http")
 	}
 	return u.Scheme + "://" + u.Host, nil
 }
 
-// BuildOriginPolicy constructs an OriginPolicy from primary origin and allowedOrigins.
+// BuildOriginPolicy constructs a strict OriginPolicy from primary origin and allowedOrigins.
 func BuildOriginPolicy(primary string, allowedOrigins []string) (*OriginPolicy, error) {
+	return BuildOriginPolicyWithOptions(primary, allowedOrigins, false)
+}
+
+// BuildOriginPolicyWithOptions constructs an OriginPolicy with optional LAN origin allowance.
+func BuildOriginPolicyWithOptions(primary string, allowedOrigins []string, allowLAN bool) (*OriginPolicy, error) {
 	p := &OriginPolicy{
-		exact: make(map[string]struct{}),
+		exact:    make(map[string]struct{}),
+		allowLAN: allowLAN,
 	}
 	u, err := url.Parse(primary)
 	if err != nil || u.Host == "" {
@@ -79,7 +169,7 @@ func BuildOriginPolicy(primary string, allowedOrigins []string) (*OriginPolicy, 
 	}
 
 	for _, entry := range allowedOrigins {
-		norm, err := NormalizeAllowedOrigin(entry)
+		norm, err := normalizeAllowedOrigin(entry, allowLAN)
 		if err != nil {
 			return nil, err
 		}
@@ -128,6 +218,96 @@ func (p *OriginPolicy) IsOriginAllowed(candidate string) bool {
 			return true
 		}
 	}
+	if p.allowLAN && IsLocalNetworkOrigin(candidate) {
+		return true
+	}
+	return false
+}
+
+func isValidPort(port string) bool {
+	if port == "" || len(port) > 5 {
+		return false
+	}
+	n := 0
+	for i := 0; i < len(port); i++ {
+		ch := port[i]
+		if ch < '0' || ch > '9' {
+			return false
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
+// IsHostAllowed validates an HTTP Host header against local-network hosts and configured exact/wildcard origins.
+func (p *OriginPolicy) IsHostAllowed(hostHeader string) bool {
+	if p == nil || hostHeader == "" {
+		return false
+	}
+	for _, r := range hostHeader {
+		if r <= 0x20 || r == 0x7f || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	if strings.ContainsAny(hostHeader, "@/\\?#") {
+		return false
+	}
+
+	var reqPort string
+	if h, port, err := net.SplitHostPort(hostHeader); err == nil {
+		if !isValidPort(port) || strings.ContainsAny(h, "[]") {
+			return false
+		}
+		reqPort = port
+	}
+
+	hostname := extractHost(hostHeader)
+	if hostname == "" {
+		return false
+	}
+	if strings.ContainsAny(hostHeader, "[]") {
+		if strings.ContainsAny(hostname, "[]") {
+			return false
+		}
+		addr, err := netip.ParseAddr(hostname)
+		if err != nil || !addr.Is6() {
+			return false
+		}
+	}
+
+	if IsLocalNetworkHost(hostname) {
+		return true
+	}
+
+	for exactOrigin := range p.exact {
+		u, err := url.Parse(exactOrigin)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		if u.Port() == "" {
+			if strings.EqualFold(hostname, u.Hostname()) {
+				return true
+			}
+		} else if strings.EqualFold(hostHeader, u.Host) {
+			return true
+		}
+	}
+
+	lowerHost := strings.ToLower(hostname)
+	for _, w := range p.wildcards {
+		if w.port != "" && reqPort != w.port {
+			continue
+		}
+		suffix := strings.ToLower(w.suffix)
+		if !strings.HasSuffix(lowerHost, suffix) {
+			continue
+		}
+		label := strings.TrimSuffix(lowerHost, suffix)
+		if label != "" && !strings.Contains(label, ".") {
+			return true
+		}
+	}
+
 	return false
 }
 

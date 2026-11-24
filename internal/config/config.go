@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/soyaelithia-ui/ai-usage-monitor/internal/security"
 )
 
 var (
@@ -37,6 +43,10 @@ type QuotasConfig struct {
 type Config struct {
 	Port               int
 	BindAddr           string
+	AuthMode           string
+	AllowLAN           bool
+	AccessToken        string
+	SessionTTL         time.Duration
 	DBPath             string
 	MachineKeyPath     string
 	Origin             string
@@ -58,10 +68,25 @@ type Config struct {
 	RateLimitMax       int
 }
 
+// Overrides carries explicit CLI flag overrides applied after config file and environment variables.
+type Overrides struct {
+	BindAddr string
+	HasBind  bool
+	Port     int
+	HasPort  bool
+	AuthMode string
+	AllowLAN bool
+}
+
 type fileConfig struct {
 	Origin             string        `json:"origin"`
 	AllowedOrigins     []string      `json:"allowedOrigins"`
 	BackendPort        int           `json:"backendPort"`
+	BindAddr           string        `json:"bindAddr"`
+	AuthMode           string        `json:"authMode"`
+	AllowLAN           *bool         `json:"allowLan"`
+	AccessToken        string        `json:"accessToken"`
+	SessionTTL         string        `json:"sessionTtl"`
 	GatewayPort        int           `json:"gatewayPort"`
 	GatewayKey         string        `json:"gatewayKey"`
 	IngestKey          string        `json:"ingestKey"`
@@ -98,9 +123,15 @@ func ConfigPath() string {
 
 // Load reads configuration from optional backend.json and environment variables.
 func Load() (*Config, error) {
+	return LoadWithOverrides(Overrides{})
+}
+
+// LoadWithOverrides reads configuration from backend.json, environment variables, and CLI overrides.
+func LoadWithOverrides(ov Overrides) (*Config, error) {
 	cfg := &Config{
 		Port:           8080,
 		BindAddr:       "127.0.0.1",
+		AuthMode:       "token",
 		DBPath:         "./data/usage.db",
 		PricingSources: []string{"models.dev", "litellm", "openrouter"},
 		RateLimitMax:   600,
@@ -121,6 +152,25 @@ func Load() (*Config, error) {
 		}
 		if fc.BackendPort > 0 {
 			cfg.Port = fc.BackendPort
+		}
+		if strings.TrimSpace(fc.BindAddr) != "" {
+			cfg.BindAddr = strings.TrimSpace(fc.BindAddr)
+		}
+		if strings.TrimSpace(fc.AuthMode) != "" {
+			cfg.AuthMode = fc.AuthMode
+		}
+		if fc.AllowLAN != nil {
+			cfg.AllowLAN = *fc.AllowLAN
+		}
+		if fc.AccessToken != "" {
+			cfg.AccessToken = fc.AccessToken
+		}
+		if strings.TrimSpace(fc.SessionTTL) != "" {
+			d, err := ParseDuration(fc.SessionTTL)
+			if err != nil {
+				return nil, fmt.Errorf("invalid config sessionTtl: %w", err)
+			}
+			cfg.SessionTTL = d
 		}
 		if fc.DB != "" {
 			cfg.DBPath = resolveRel(fc.DB)
@@ -165,6 +215,29 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid PORT: %q", v)
 		}
 		cfg.Port = p
+	}
+	if v := strings.TrimSpace(os.Getenv("BIND_ADDR")); v != "" {
+		cfg.BindAddr = v
+	}
+	if v := strings.TrimSpace(os.Getenv("AUTH_MODE")); v != "" {
+		cfg.AuthMode = v
+	}
+	if v := os.Getenv("ALLOW_LAN"); v != "" {
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("invalid ALLOW_LAN: %q", v)
+		}
+		cfg.AllowLAN = b
+	}
+	if v := os.Getenv("ACCESS_TOKEN"); v != "" {
+		cfg.AccessToken = v
+	}
+	if v := strings.TrimSpace(os.Getenv("SESSION_TTL")); v != "" {
+		d, err := ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid SESSION_TTL: %w", err)
+		}
+		cfg.SessionTTL = d
 	}
 	if v := os.Getenv("DB_PATH"); v != "" {
 		cfg.DBPath = v
@@ -261,14 +334,57 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if ov.HasPort {
+		if ov.Port < 1 || ov.Port > 65535 {
+			return nil, fmt.Errorf("invalid --port: %d", ov.Port)
+		}
+		cfg.Port = ov.Port
+	}
+	if ov.HasBind {
+		cfg.BindAddr = strings.TrimSpace(ov.BindAddr)
+		if cfg.BindAddr == "" {
+			return nil, errors.New("empty --bind address")
+		}
+	}
+	if ov.AuthMode != "" {
+		cfg.AuthMode = ov.AuthMode
+	}
+	if ov.AllowLAN {
+		cfg.AllowLAN = true
+	}
+
+	normAuthMode, err := NormalizeAuthMode(cfg.AuthMode)
+	if err != nil {
+		return nil, err
+	}
+	cfg.AuthMode = normAuthMode
+
+	if cfg.BindAddr == "" {
+		cfg.BindAddr = "127.0.0.1"
+	}
+	bindAddr, err := netip.ParseAddr(cfg.BindAddr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid bind address %q: %w", cfg.BindAddr, err)
+	}
+	bindAddr = bindAddr.Unmap()
+	cfg.BindAddr = bindAddr.String()
+
+	if cfg.AuthMode == "local" || !bindAddr.IsLoopback() {
+		cfg.AllowLAN = true
+	}
+
 	if cfg.PricingCachePath == "" && cfg.DBPath != "" && cfg.DBPath != ":memory:" && !strings.HasPrefix(cfg.DBPath, "file::memory:") {
 		cfg.PricingCachePath = filepath.Join(filepath.Dir(cfg.DBPath), "pricing-cache.json")
 	}
 
 	if cfg.Origin == "" {
-		cfg.Origin = fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+		host := "127.0.0.1"
+		if !bindAddr.IsLoopback() && !bindAddr.IsUnspecified() {
+			host = bindAddr.String()
+		}
+		cfg.Origin = "http://" + net.JoinHostPort(host, strconv.Itoa(cfg.Port))
 	}
-	normalizedOrigin, err := ValidateOrigin(cfg.Origin)
+	normalizedOrigin, err := ValidateOriginWithOptions(cfg.Origin, cfg.AllowLAN)
 	if err != nil {
 		return nil, err
 	}
@@ -280,11 +396,138 @@ func Load() (*Config, error) {
 	if cfg.IngestKey != "" && (!secretFormat.MatchString(cfg.IngestKey) || (cfg.GatewayKey != "" && cfg.IngestKey == cfg.GatewayKey)) {
 		return nil, errors.New("invalid independent ingestion credential")
 	}
+	if cfg.AccessToken != "" && (!secretFormat.MatchString(cfg.AccessToken) ||
+		(cfg.GatewayKey != "" && cfg.AccessToken == cfg.GatewayKey) ||
+		(cfg.IngestKey != "" && cfg.AccessToken == cfg.IngestKey)) {
+		return nil, errors.New("invalid static access token credential")
+	}
 	return cfg, nil
+}
+
+// NormalizeAuthMode normalizes AUTH_MODE values to "token" or "local".
+func NormalizeAuthMode(raw string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "token":
+		return "token", nil
+	case "local", "lan", "no-token", "local-no-token":
+		return "local", nil
+	default:
+		return "", fmt.Errorf("invalid auth mode %q (expected token or local)", raw)
+	}
+}
+
+// ParseDuration parses a positive duration string supporting standard Go units
+// as well as "d" (24h) and "w" (7*24h) suffixes such as "30d" or "365d".
+func ParseDuration(raw string) (time.Duration, error) {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return 0, errors.New("empty duration")
+	}
+	if !strings.ContainsAny(s, "dw") {
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return 0, err
+		}
+		if d <= 0 {
+			return 0, errors.New("duration must be positive")
+		}
+		if d < time.Millisecond {
+			return 0, errors.New("duration must be at least 1ms")
+		}
+		return d, nil
+	}
+	var total time.Duration
+	for i := 0; i < len(s); {
+		numStart := i
+		hasDigit := false
+		hasDot := false
+		for i < len(s) {
+			ch := s[i]
+			if ch >= '0' && ch <= '9' {
+				hasDigit = true
+				i++
+			} else if ch == '.' && !hasDot {
+				hasDot = true
+				i++
+			} else {
+				break
+			}
+		}
+		if !hasDigit {
+			return 0, fmt.Errorf("invalid duration %q", raw)
+		}
+		numStr := s[numStart:i]
+		unitStart := i
+		for i < len(s) && (s[i] < '0' || s[i] > '9') && s[i] != '.' {
+			i++
+		}
+		unit := s[unitStart:i]
+		if unit == "" {
+			return 0, fmt.Errorf("missing unit in duration %q", raw)
+		}
+		var mult time.Duration
+		switch unit {
+		case "w":
+			mult = 7 * 24 * time.Hour
+		case "d":
+			mult = 24 * time.Hour
+		default:
+			part, err := time.ParseDuration(numStr + unit)
+			if err != nil {
+				return 0, fmt.Errorf("invalid duration %q: %w", raw, err)
+			}
+			if part <= 0 {
+				return 0, fmt.Errorf("invalid non-positive duration %q", raw)
+			}
+			if total > math.MaxInt64-part {
+				return 0, fmt.Errorf("duration overflow %q", raw)
+			}
+			total += part
+			continue
+		}
+		var part time.Duration
+		if !hasDot {
+			n, err := strconv.ParseInt(numStr, 10, 64)
+			if err != nil || n <= 0 || n > math.MaxInt64/int64(mult) {
+				return 0, fmt.Errorf("invalid or overflowing duration %q", raw)
+			}
+			part = time.Duration(n) * mult
+		} else {
+			val, err := strconv.ParseFloat(numStr, 64)
+			if err != nil || math.IsNaN(val) || math.IsInf(val, 0) || val <= 0 {
+				return 0, fmt.Errorf("invalid duration %q", raw)
+			}
+			ns := val * float64(mult)
+			if ns >= float64(math.MaxInt64) {
+				return 0, fmt.Errorf("duration overflow %q", raw)
+			}
+			part = time.Duration(ns)
+			if part <= 0 {
+				return 0, fmt.Errorf("duration too small %q", raw)
+			}
+		}
+		if total > math.MaxInt64-part {
+			return 0, fmt.Errorf("duration overflow %q", raw)
+		}
+		total += part
+	}
+	if total <= 0 {
+		return 0, errors.New("duration must be positive")
+	}
+	if total < time.Millisecond {
+		return 0, errors.New("duration must be at least 1ms")
+	}
+	return total, nil
 }
 
 // ValidateOrigin ensures the configured primary origin is HTTPS or loopback HTTP.
 func ValidateOrigin(raw string) (string, error) {
+	return ValidateOriginWithOptions(raw, false)
+}
+
+// ValidateOriginWithOptions ensures the configured primary origin is HTTPS, loopback HTTP,
+// or (when allowLAN is true) an HTTP origin on a private/local-network IP or *.local mDNS hostname.
+func ValidateOriginWithOptions(raw string, allowLAN bool) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return "", errors.New("invalid configured origin")
@@ -294,7 +537,8 @@ func ValidateOrigin(raw string) (string, error) {
 	}
 	host := u.Hostname()
 	isLoopback := host == "localhost" || host == "127.0.0.1" || host == "::1"
-	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback) {
+	isLAN := allowLAN && u.Scheme == "http" && security.IsLocalNetworkHost(host)
+	if u.Scheme != "https" && !(u.Scheme == "http" && isLoopback) && !isLAN {
 		return "", errors.New("use an HTTPS origin, or HTTP on loopback for development")
 	}
 	return u.Scheme + "://" + u.Host, nil
